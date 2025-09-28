@@ -24,17 +24,27 @@ e.g. for the fish shell you add the following to your config:
 fish_add_path ~/.cargo/bin
 ```
 
-### Git and cargo
+### Advanced install options
+Install a specific version
+```sh
+cargo install --locked --version 0.1.18 hygg
+```
+
+Insall a specific git branch
+```sh
+cargo install --locked --git https://github.com/kruseio/hygg --branch cross-platform-which hygg
+```
+
 Clone the repo, build from source and run
 ```sh
-git clone https://github.com/kruserr/hygg.git
+git clone https://github.com/kruseio/hygg.git
 cd hygg
 cargo run -- test-data/pdf/pdfreference1.7old-1-50.pdf
 ```
 
 Clone the repo, build from source, install and run
 ```sh
-git clone https://github.com/kruserr/hygg.git
+git clone https://github.com/kruseio/hygg.git
 cd hygg
 cargo install --locked --path hygg
 hygg test-data/pdf/pdfreference1.7old-1-50.pdf
@@ -43,6 +53,8 @@ hygg test-data/pdf/pdfreference1.7old-1-50.pdf
 ## Additional formats via pandoc
 ```sh
 sudo apt install pandoc
+# scoop install pandoc
+# brew install pandoc
 hygg doc.docx
 ```
 
