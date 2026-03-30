@@ -45,6 +45,10 @@ pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
     draw_settings_popup(frame, editor, area);
   }
 
+  if editor.tutorial_demo_mode {
+    draw_demo_hint(frame, editor, content_area);
+  }
+
   set_cursor(frame, editor, content_area, status_area);
 }
 
@@ -151,6 +155,55 @@ fn build_status_line(editor: &Editor) -> Line<'static> {
   }
 
   Line::from(spans)
+}
+
+fn draw_demo_hint(frame: &mut Frame, editor: &Editor, area: Rect) {
+  let hint_text = match &editor.demo_hint_text {
+    Some(text) if !text.is_empty() => text.clone(),
+    _ => return,
+  };
+
+  let amber = Color::Rgb(255, 191, 0);
+  let bg = Color::Rgb(20, 20, 20);
+
+  let hint_lines: Vec<&str> = hint_text.split('\n').collect();
+  let max_len =
+    hint_lines.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+  let padding: u16 = 2;
+  let popup_w = (max_len as u16 + padding * 2 + 2).min(area.width);
+  let popup_h = (hint_lines.len() as u16 + 2).min(area.height);
+
+  let left = area.x + area.width.saturating_sub(popup_w) / 2;
+  let top = area
+    .y
+    .saturating_add(area.height)
+    .saturating_sub(popup_h + 2)
+    .max(area.y);
+  let popup_area = Rect { x: left, y: top, width: popup_w, height: popup_h };
+
+  frame.render_widget(Clear, popup_area);
+  frame.render_widget(
+    Block::bordered()
+      .border_style(Style::default().fg(amber).bg(bg))
+      .style(Style::default().bg(bg)),
+    popup_area,
+  );
+
+  let inner_w = popup_w.saturating_sub(2) as usize;
+  for (i, line) in hint_lines.iter().enumerate() {
+    let line_chars = line.chars().count();
+    let lpad = (inner_w.saturating_sub(line_chars)) / 2;
+    let padded = format!("{}{}", " ".repeat(lpad), line);
+    frame.render_widget(
+      Paragraph::new(padded).style(Style::default().fg(amber).bg(bg)),
+      Rect {
+        x: left + 1,
+        y: top + 1 + i as u16,
+        width: popup_w.saturating_sub(2),
+        height: 1,
+      },
+    );
+  }
 }
 
 fn draw_settings_popup(frame: &mut Frame, editor: &Editor, area: Rect) {
