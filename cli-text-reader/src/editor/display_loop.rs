@@ -32,7 +32,10 @@ impl Editor {
       self.mark_dirty();
     }
 
-    if matches!(self.voice_status, PlaybackStatus::Loading) {
+    if matches!(
+      self.voice_status,
+      PlaybackStatus::Loading | PlaybackStatus::Playing
+    ) {
       self.mark_dirty();
     }
 
@@ -73,6 +76,8 @@ impl Editor {
   pub fn poll_timeout(&self) -> Duration {
     if self.needs_redraw || self.tutorial_demo_mode {
       Duration::from_millis(16)
+    } else if matches!(self.voice_status, PlaybackStatus::Playing) {
+      Duration::from_millis(50)
     } else if matches!(self.voice_status, PlaybackStatus::Loading) {
       Duration::from_millis(100)
     } else {
