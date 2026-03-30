@@ -1,14 +1,15 @@
 use crossterm::{
+  QueueableCommand,
   cursor::MoveTo,
   style::{Color, Print, ResetColor, SetForegroundColor},
-  QueueableCommand,
 };
 use std::io::Write;
 
 use super::core::Editor;
-use crate::config::{load_config, save_config, AppConfig};
+use crate::config::{AppConfig, load_config, save_config};
 
-const FIELD_NAMES: [&str; 3] = ["ELEVENLABS_API_KEY", "VOICE_ID", "PLAYBACK_SPEED"];
+const FIELD_NAMES: [&str; 3] =
+  ["ELEVENLABS_API_KEY", "VOICE_ID", "PLAYBACK_SPEED"];
 const POPUP_W: u16 = 60;
 const POPUP_H: u16 = 14;
 
@@ -76,8 +77,10 @@ impl Editor {
         KeyCode::Esc | KeyCode::Enter => {
           // Validate PLAYBACK_SPEED on commit
           if self.settings_cursor == 2 {
-            let v: f32 =
-              self.settings_fields[2].parse::<f32>().unwrap_or(1.0).clamp(0.5, 2.0);
+            let v: f32 = self.settings_fields[2]
+              .parse::<f32>()
+              .unwrap_or(1.0)
+              .clamp(0.5, 2.0);
             self.settings_fields[2] = format!("{v:.1}");
           }
           self.settings_editing = false;
@@ -151,7 +154,11 @@ impl Editor {
 
     // ── bottom border ───────────────────────────────────────────────────────
     buf.queue(MoveTo(left, top + POPUP_H - 1))?;
-    buf.queue(Print(format!("└{:─<width$}┘", "", width = (POPUP_W as usize).saturating_sub(2))))?;
+    buf.queue(Print(format!(
+      "└{:─<width$}┘",
+      "",
+      width = (POPUP_W as usize).saturating_sub(2)
+    )))?;
 
     // ── field labels + values ───────────────────────────────────────────────
     // Layout:
@@ -216,7 +223,10 @@ impl Editor {
 
     // ── saved confirmation ───────────────────────────────────────────────────
     let saved_row = top + POPUP_H - 2;
-    if self.settings_saved_until.map_or(false, |t| std::time::Instant::now() < t) {
+    if self
+      .settings_saved_until
+      .map_or(false, |t| std::time::Instant::now() < t)
+    {
       buf.queue(MoveTo(left + 2, saved_row))?;
       buf.queue(SetForegroundColor(Color::Green))?;
       buf.queue(Print("Saved."))?;

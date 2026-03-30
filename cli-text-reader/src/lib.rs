@@ -1,7 +1,6 @@
 mod bookmarks;
 mod config;
 mod core_state;
-mod voice;
 mod core_types;
 mod debug;
 pub mod demo_components;
@@ -22,8 +21,27 @@ mod interactive_tutorial_utils;
 mod progress;
 mod tutorial;
 mod utils;
+mod voice;
 
-use editor::Editor;
+pub use crossterm::event::KeyEvent;
+pub use editor::{Editor, EditorAction};
+pub use ratatui::prelude::{Frame, Rect};
+
+pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
+  editor::draw(frame, area, editor);
+}
+
+pub fn handle_key(key: KeyEvent, editor: &mut Editor) -> EditorAction {
+  editor::handle_key(key, editor)
+}
+
+pub fn tick(editor: &mut Editor) -> EditorAction {
+  editor::tick(editor)
+}
+
+pub fn update_layout(editor: &mut Editor, area: Rect) {
+  editor::update_layout(editor, area);
+}
 
 pub fn run_cli_text_reader(
   lines: Vec<String>,

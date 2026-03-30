@@ -21,12 +21,8 @@ pub struct StreamWriter {
 
 impl StreamBuffer {
   pub fn new() -> (Self, StreamWriter) {
-    let inner =
-      Arc::new(Mutex::new(Inner { data: Vec::new(), done: false }));
-    (
-      StreamBuffer { inner: Arc::clone(&inner), pos: 0 },
-      StreamWriter { inner },
-    )
+    let inner = Arc::new(Mutex::new(Inner { data: Vec::new(), done: false }));
+    (StreamBuffer { inner: Arc::clone(&inner), pos: 0 }, StreamWriter { inner })
   }
 
   pub fn buffered_len(&self) -> usize {

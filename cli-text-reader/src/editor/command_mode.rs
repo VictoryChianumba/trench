@@ -1,5 +1,4 @@
 use crossterm::event::{self, Event as CEvent, KeyCode, KeyModifiers};
-use std::io;
 
 use super::core::{Editor, EditorMode};
 
@@ -8,7 +7,6 @@ impl Editor {
   pub fn handle_command_mode_event(
     &mut self,
     key_event: event::KeyEvent,
-    stdout: &mut io::Stdout,
   ) -> Result<bool, Box<dyn std::error::Error>> {
     self.debug_log(&format!("handle_command_mode_event: key={key_event:?}"));
     self.debug_log(&format!(
@@ -50,7 +48,7 @@ impl Editor {
       }
       KeyCode::Enter => {
         self.debug_log("  Enter pressed, executing command");
-        let should_exit = self.execute_command(stdout)?;
+        let should_exit = self.execute_command()?;
         self.debug_log(&format!("  execute_command returned: {should_exit}"));
         if should_exit {
           return Ok(true);

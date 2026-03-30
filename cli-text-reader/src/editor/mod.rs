@@ -1,5 +1,6 @@
 // Editor module - main exports
 
+mod actions;
 mod buffer;
 mod buffer_overlay;
 mod buffer_split;
@@ -37,12 +38,14 @@ mod normal_navigation_find;
 mod normal_navigation_jumps;
 mod normal_search_visual;
 mod page_navigation;
+mod runtime;
 mod screen_position;
 mod search_mode;
 mod selection;
 mod selection_basic;
 mod selection_text;
 mod selection_words;
+mod settings;
 mod status_line;
 mod text_objects;
 mod text_objects_delimiters;
@@ -58,14 +61,38 @@ mod visual_mode_control;
 mod visual_mode_find;
 mod visual_mode_movement;
 mod visual_mode_objects;
-mod settings;
 mod voice_control;
+mod widget;
 mod word_navigation;
 mod yank;
 
 // Re-export main structures and functions
+pub use actions::EditorAction;
 pub use commands::handle_command;
 pub use core::{Editor, EditorMode, EditorState};
+
+pub fn draw(
+  frame: &mut ratatui::prelude::Frame,
+  area: ratatui::layout::Rect,
+  editor: &mut Editor,
+) {
+  widget::draw(frame, area, editor);
+}
+
+pub fn handle_key(
+  key: crossterm::event::KeyEvent,
+  editor: &mut Editor,
+) -> EditorAction {
+  editor.handle_key(key)
+}
+
+pub fn tick(editor: &mut Editor) -> EditorAction {
+  editor.tick()
+}
+
+pub fn update_layout(editor: &mut Editor, area: ratatui::layout::Rect) {
+  editor.update_layout(area);
+}
 
 // Tests
 #[cfg(test)]

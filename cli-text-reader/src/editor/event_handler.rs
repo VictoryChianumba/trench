@@ -1,15 +1,25 @@
 use crossterm::event;
-use std::io;
 
-use super::core::{Editor, EditorMode};
+use super::{
+  actions::EditorAction,
+  core::{Editor, EditorMode},
+};
 
 impl Editor {
-  // Main event dispatcher - routes events to appropriate mode handlers
-  pub fn handle_event(
+  pub fn handle_key(&mut self, key_event: event::KeyEvent) -> EditorAction {
+    match self.handle_key_inner(key_event) {
+      Ok(action) => action,
+      Err(error) => {
+        self.debug_log_error(&format!("handle_key failed: {error}"));
+        EditorAction::NeedsRedraw
+      }
+    }
+  }
+
+  fn handle_key_inner(
     &mut self,
     key_event: event::KeyEvent,
-    stdout: &mut io::Stdout,
-  ) -> Result<bool, Box<dyn std::error::Error>> {
+  ) -> Result<EditorAction, Box<dyn std::error::Error>> {
     let active_mode = self.get_active_mode();
     self.debug_log(&format!(
       "=== handle_event: key={:?}, active_buffer={}, active_mode={:?}, view_mode={:?} ===",
@@ -18,7 +28,11 @@ impl Editor {
     // Settings popup intercepts all keys while open
     if self.show_settings {
       if let Some(result) = self.handle_settings_key(key_event)? {
-        return Ok(result);
+        return Ok(if result {
+          EditorAction::Quit
+        } else {
+          self.action_from_redraw_state()
+        });
       }
     }
 
@@ -32,7 +46,7 @@ impl Editor {
         self.handle_search_mode_event(key_event)
       }
       EditorMode::Command | EditorMode::CommandExecution => {
-        self.handle_command_mode_event(key_event, stdout)
+        self.handle_command_mode_event(key_event)
       }
       EditorMode::Tutorial => Ok(self.process_tutorial_key(key_event.code)),
     };
@@ -55,6 +69,18 @@ impl Editor {
       }
     }
 
-    result
+    if result? {
+      Ok(EditorAction::Quit)
+    } else {
+      Ok(self.action_from_redraw_state())
+    }
+  }
+
+  fn action_from_redraw_state(&self) -> EditorAction {
+    if self.needs_redraw {
+      EditorAction::NeedsRedraw
+    } else {
+      EditorAction::None
+    }
   }
 }
