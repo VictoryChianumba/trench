@@ -7,7 +7,7 @@ use ratatui::{
 use super::{
   core::{Editor, EditorMode, ViewMode},
   layout, render_lines,
-  widgets::{settings_popup, status_bar},
+  widgets::{demo_hint, settings_popup, status_bar},
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
@@ -38,6 +38,9 @@ pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
 
   if editor.show_settings {
     settings_popup::draw_settings_popup(frame, editor, area);
+  }
+  if editor.tutorial_demo_mode {
+    demo_hint::draw_demo_hint(frame, editor, area);
   }
 
   set_cursor(frame, editor, content_area, status_area);
