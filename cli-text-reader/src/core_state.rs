@@ -1,5 +1,6 @@
 use arboard::Clipboard;
 use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -16,6 +17,7 @@ pub struct Editor {
   pub offset: usize,
   pub width: usize,
   pub height: usize,
+  pub viewport: Rect,
   pub show_highlighter: bool,
   pub editor_state: EditorState,
   pub document_hash: u64,

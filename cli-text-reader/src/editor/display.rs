@@ -157,8 +157,7 @@ impl Editor {
     // --- Voice-mode rendering state ---
     // Only apply dimming/highlight effects while actively playing and the
     // cursor has not been moved away from the playing paragraph.
-    let voice_playing =
-      matches!(self.voice_status, PlaybackStatus::Playing);
+    let voice_playing = matches!(self.voice_status, PlaybackStatus::Playing);
     let cursor_doc_line = self.offset + self.cursor_y;
     let voice_cursor_detached = voice_playing
       && self.reading_mode
@@ -170,8 +169,7 @@ impl Editor {
     // Used to pick which word to highlight.
     let est_char_offset: usize = if voice_playing {
       if let Some(started) = self.voice_started_at {
-        let elapsed_chars =
-          (started.elapsed().as_secs_f32() * 13.0) as usize;
+        let elapsed_chars = (started.elapsed().as_secs_f32() * 13.0) as usize;
         self.voice_chars_before.saturating_add(elapsed_chars)
       } else {
         0
@@ -212,8 +210,7 @@ impl Editor {
 
       // Determine if this line is outside the active paragraph (dim it)
       let is_dimmed = voice_playing
-        && (line_idx < self.voice_para_start
-          || line_idx > self.voice_para_end);
+        && (line_idx < self.voice_para_start || line_idx > self.voice_para_end);
 
       if line_idx < self.lines.len() {
         // We have a real line to display
@@ -372,7 +369,8 @@ fn find_word_at(s: &str, col: usize) -> (usize, usize) {
   let col = (0..=col).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
 
   // Scan left to find word start
-  let is_word_char = |c: char| c.is_alphanumeric() || c == '\'' || c == '\u{2019}';
+  let is_word_char =
+    |c: char| c.is_alphanumeric() || c == '\'' || c == '\u{2019}';
 
   let start = s[..col]
     .rfind(|c: char| !is_word_char(c))
@@ -387,9 +385,8 @@ fn find_word_at(s: &str, col: usize) -> (usize, usize) {
 
   if start >= end {
     // Advance to the next char boundary
-    let next = ((col + 1)..=s.len())
-      .find(|&i| s.is_char_boundary(i))
-      .unwrap_or(s.len());
+    let next =
+      ((col + 1)..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
     (col, next)
   } else {
     (start, end)

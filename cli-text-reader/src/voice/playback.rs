@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{chunk_paragraphs, elevenlabs::ElevenLabsService, VoicePlayingInfo};
+use super::{
+  VoicePlayingInfo, chunk_paragraphs, elevenlabs::ElevenLabsService,
+};
 
 pub enum PlaybackCommand {
   Start { text: String, doc_start_line: usize, doc_end_line: usize },
@@ -39,14 +41,30 @@ impl PlaybackController {
     let info_clone = Arc::clone(&playing_info);
 
     thread::spawn(move || {
-      playback_loop(api_key, voice_id, cmd_rx, status_clone, error_clone, info_clone);
+      playback_loop(
+        api_key,
+        voice_id,
+        cmd_rx,
+        status_clone,
+        error_clone,
+        info_clone,
+      );
     });
 
     Self { cmd_tx, status, voice_error, playing_info }
   }
 
-  pub fn start(&self, text: String, doc_start_line: usize, doc_end_line: usize) {
-    let _ = self.cmd_tx.send(PlaybackCommand::Start { text, doc_start_line, doc_end_line });
+  pub fn start(
+    &self,
+    text: String,
+    doc_start_line: usize,
+    doc_end_line: usize,
+  ) {
+    let _ = self.cmd_tx.send(PlaybackCommand::Start {
+      text,
+      doc_start_line,
+      doc_end_line,
+    });
   }
 
   pub fn pause(&self) {
@@ -175,8 +193,7 @@ fn playback_loop(
               sink.append(source);
             }
             Err(e) => {
-              *error.lock().unwrap() =
-                Some(format!("Audio decode error: {e}"));
+              *error.lock().unwrap() = Some(format!("Audio decode error: {e}"));
               was_stopped = true;
               break 'chunks;
             }

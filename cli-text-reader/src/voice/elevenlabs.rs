@@ -16,10 +16,7 @@ impl ElevenLabsService {
   /// Begin streaming MP3 audio for `text`.  Returns a `StreamBuffer` that
   /// fills concurrently on a background thread — the caller can start
   /// decoding as soon as enough bytes have arrived.
-  pub fn stream(
-    &self,
-    text: &str,
-  ) -> Result<StreamBuffer, String> {
+  pub fn stream(&self, text: &str) -> Result<StreamBuffer, String> {
     let url = format!(
       "https://api.elevenlabs.io/v1/text-to-speech/{}/stream",
       self.voice_id

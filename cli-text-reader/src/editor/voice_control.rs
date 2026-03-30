@@ -219,9 +219,8 @@ impl Editor {
   pub(super) fn get_current_paragraph_with_lines(
     &self,
   ) -> (String, usize, usize) {
-    let current = (self.offset + self.cursor_y).min(
-      self.lines.len().saturating_sub(1),
-    );
+    let current =
+      (self.offset + self.cursor_y).min(self.lines.len().saturating_sub(1));
 
     if self.lines.is_empty() {
       return (String::new(), 0, 0);
@@ -229,8 +228,7 @@ impl Editor {
 
     // Walk backwards to find paragraph start
     let mut start = current;
-    while start > 0 && !self.lines[start.saturating_sub(1)].trim().is_empty()
-    {
+    while start > 0 && !self.lines[start.saturating_sub(1)].trim().is_empty() {
       start -= 1;
     }
     if start < self.lines.len() && self.lines[start].trim().is_empty() {
@@ -239,9 +237,7 @@ impl Editor {
 
     // Walk forwards to find paragraph end
     let mut end = current;
-    while end + 1 < self.lines.len()
-      && !self.lines[end + 1].trim().is_empty()
-    {
+    while end + 1 < self.lines.len() && !self.lines[end + 1].trim().is_empty() {
       end += 1;
     }
 
@@ -258,9 +254,8 @@ impl Editor {
   fn get_text_from_cursor_to_end_of_paragraph_with_lines(
     &self,
   ) -> (String, usize, usize) {
-    let current = (self.offset + self.cursor_y).min(
-      self.lines.len().saturating_sub(1),
-    );
+    let current =
+      (self.offset + self.cursor_y).min(self.lines.len().saturating_sub(1));
 
     if self.lines.is_empty() {
       return (String::new(), 0, 0);
@@ -268,9 +263,7 @@ impl Editor {
 
     // Walk forwards to find paragraph end
     let mut end = current;
-    while end + 1 < self.lines.len()
-      && !self.lines[end + 1].trim().is_empty()
-    {
+    while end + 1 < self.lines.len() && !self.lines[end + 1].trim().is_empty() {
       end += 1;
     }
 

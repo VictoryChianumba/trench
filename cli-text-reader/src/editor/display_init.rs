@@ -1,11 +1,4 @@
-use crossterm::{
-  cursor::{Hide, Show},
-  execute,
-  terminal::{self, Clear, ClearType},
-};
-use std::io::{self, IsTerminal, Result as IoResult};
-
-use super::core::{Editor, EditorMode, ViewMode};
+use super::{core::Editor, runtime};
 use crate::bookmarks::load_bookmarks;
 use crate::config::load_config;
 use crate::highlights::load_highlights;
@@ -14,7 +7,6 @@ use crate::voice::playback::PlaybackController;
 
 impl Editor {
   pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stdout = io::stdout();
     let config = load_config();
 
     self.show_highlighter = config.enable_line_highlighter.unwrap_or(true);
@@ -113,11 +105,6 @@ impl Editor {
       }
     };
 
-    if std::io::stdout().is_terminal() {
-      execute!(stdout, terminal::EnterAlternateScreen, Hide)?;
-      terminal::enable_raw_mode()?;
-    }
-
     // Show tutorial on first launch or start demo mode
     if self.tutorial_demo_mode {
       let demo_id = self.demo_id.unwrap_or(0); // Default to marketing demo if no ID specified
@@ -128,20 +115,8 @@ impl Editor {
       self.show_interactive_tutorial()?;
     }
 
-    self.main_loop(&mut stdout, skip_first_center)?;
-
-    self.cleanup(&mut stdout)?;
-    Ok(())
-  }
-
-  pub fn cleanup(
-    &self,
-    stdout: &mut io::Stdout,
-  ) -> Result<(), Box<dyn std::error::Error>> {
-    if std::io::stdout().is_terminal() {
-      execute!(stdout, Show, terminal::LeaveAlternateScreen)?;
-      terminal::disable_raw_mode()?;
-    }
+    self.apply_initial_layout(skip_first_center);
+    runtime::run(self)?;
     Ok(())
   }
 }
