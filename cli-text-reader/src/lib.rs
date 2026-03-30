@@ -19,7 +19,6 @@ mod interactive_tutorial_steps;
 mod interactive_tutorial_tests;
 mod interactive_tutorial_utils;
 mod progress;
-mod tutorial;
 mod utils;
 mod voice;
 
