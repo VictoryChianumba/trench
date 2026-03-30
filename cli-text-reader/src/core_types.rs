@@ -29,6 +29,17 @@ pub enum EditorMode {
   Tutorial, // Interactive tutorial mode
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingInput {
+  CommandRegister,
+  CharFind { forward: bool, till: bool, visual: bool },
+  GotoPrefix,
+  SetMark,
+  JumpToMark,
+  VisualTextObject { around: bool },
+  OperatorTextObjectInner,
+}
+
 // Buffer state for managing multiple buffers
 #[derive(Clone)]
 pub struct BufferState {

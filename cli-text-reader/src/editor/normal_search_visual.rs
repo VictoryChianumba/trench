@@ -1,6 +1,6 @@
-use crossterm::event::{self, Event as CEvent, KeyCode, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyModifiers};
 
-use super::core::{Editor, EditorMode};
+use super::core::{Editor, EditorMode, PendingInput};
 
 impl Editor {
   // Handle search and visual mode related key events in normal mode
@@ -167,52 +167,7 @@ impl Editor {
       KeyCode::Char('i') => {
         // Text object selection
         if let Some('v') = self.editor_state.operator_pending {
-          // For visual text object selection operations like 'viw'
-          let inner_key = if self.tutorial_demo_mode {
-            if let Some(next_key) = self.check_demo_progress() {
-              next_key
-            } else {
-              return Ok(Some(false));
-            }
-          } else {
-            match event::read()? {
-              CEvent::Key(k) => k,
-              _ => return Ok(Some(false)),
-            }
-          };
-          match inner_key.code {
-            KeyCode::Char('w') => {
-              // Inner word
-              self.select_inner_word(false);
-              self.editor_state.operator_pending = None;
-            }
-            KeyCode::Char('W') => {
-              // Inner WORD
-              self.select_inner_word(true);
-              self.editor_state.operator_pending = None;
-            }
-            KeyCode::Char('"')
-            | KeyCode::Char('\'')
-            | KeyCode::Char('(')
-            | KeyCode::Char(')')
-            | KeyCode::Char('{')
-            | KeyCode::Char('}')
-            | KeyCode::Char('[')
-            | KeyCode::Char(']') => {
-              // Inner quotes, parentheses, braces, brackets
-              if let KeyCode::Char(c) = inner_key.code
-                && let Some((start, end)) = self.find_text_object(c)
-              {
-                let line_idx = self.offset + self.cursor_y;
-                self.editor_state.selection_start = Some((line_idx, start));
-                self.editor_state.selection_end = Some((line_idx, end));
-              }
-              self.editor_state.operator_pending = None;
-            }
-            _ => {
-              self.editor_state.operator_pending = None;
-            }
-          }
+          self.begin_pending_input(PendingInput::OperatorTextObjectInner)?;
         }
         Ok(Some(false))
       }

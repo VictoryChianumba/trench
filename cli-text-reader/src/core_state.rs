@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::voice::playback::{PlaybackController, PlaybackStatus};
 
-use super::core_types::{BufferState, EditorState, ViewMode};
+use super::core_types::{BufferState, EditorState, PendingInput, ViewMode};
 use crate::demo_script::DemoScript;
 use crate::highlights::HighlightData;
 use crate::interactive_tutorial_buffer::TutorialSuccessCondition;
@@ -99,6 +99,5 @@ pub struct Editor {
   pub settings_fields: [String; 3],
   pub settings_editing: bool,
   pub settings_saved_until: Option<std::time::Instant>,
-  /// Waiting for the next key to complete Ctrl+R <register> in command mode.
-  pub awaiting_register_key: bool,
+  pub pending_input: Option<PendingInput>,
 }

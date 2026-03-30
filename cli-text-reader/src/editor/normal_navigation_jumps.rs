@@ -1,5 +1,5 @@
-use super::core::Editor;
-use crossterm::event::{self, Event as CEvent, KeyCode};
+use super::core::{Editor, PendingInput};
+use crossterm::event::KeyCode;
 
 impl Editor {
   // Handle jump/goto keys (g/G/0/$^/%)
@@ -9,32 +9,7 @@ impl Editor {
   ) -> Result<Option<bool>, Box<dyn std::error::Error>> {
     match key_code {
       KeyCode::Char('g') => {
-        // Handle 'g' prefix commands
-        let inner_key = if self.tutorial_demo_mode {
-          if let Some(next_key) = self.check_demo_progress() {
-            next_key
-          } else {
-            return Ok(None);
-          }
-        } else {
-          match event::read()? {
-            CEvent::Key(k) => k,
-            _ => return Ok(None),
-          }
-        };
-        match inner_key.code {
-          KeyCode::Char('g') => {
-            // 'gg' - go to first line with overscroll
-            self.goto_line_with_overscroll(0);
-          }
-          KeyCode::Char('v') => {
-            // 'gv' - restore last visual selection
-            self.restore_visual_selection();
-          }
-          _ => {
-            // Unknown 'g' command - do nothing
-          }
-        }
+        self.begin_pending_input(PendingInput::GotoPrefix)?;
         Ok(Some(false))
       }
       KeyCode::Char('G') => {
@@ -155,65 +130,11 @@ impl Editor {
   ) -> Result<Option<bool>, Box<dyn std::error::Error>> {
     match key_code {
       KeyCode::Char('m') => {
-        // Set mark
-        let mark_key = if self.tutorial_demo_mode {
-          if let Some(next_key) = self.check_demo_progress() {
-            next_key
-          } else {
-            return Ok(None);
-          }
-        } else {
-          match event::read()? {
-            CEvent::Key(k) => k,
-            _ => return Ok(None),
-          }
-        };
-        if let KeyCode::Char(mark_char) = mark_key.code
-          && mark_char.is_ascii_lowercase()
-        {
-          let (line, col) = self.get_cursor_position();
-          self.marks.insert(mark_char, (line, col));
-          self.save_bookmarks();
-        }
+        self.begin_pending_input(PendingInput::SetMark)?;
         Ok(Some(false))
       }
       KeyCode::Char('\'') => {
-        // Jump to mark or previous position
-        let mark_key = if self.tutorial_demo_mode {
-          if let Some(next_key) = self.check_demo_progress() {
-            next_key
-          } else {
-            return Ok(None);
-          }
-        } else {
-          match event::read()? {
-            CEvent::Key(k) => k,
-            _ => return Ok(None),
-          }
-        };
-        match mark_key.code {
-          KeyCode::Char('\'') => {
-            // '' - jump to previous position
-            if let Some((line, col)) = self.previous_position {
-              let current_pos = self.get_cursor_position();
-              self.previous_position = Some(current_pos);
-              self.move_to_position(line, col);
-            }
-          }
-          KeyCode::Char(mark_char) if mark_char.is_ascii_lowercase() => {
-            // '{mark} - jump to mark
-            if let Some(&(line, col)) = self.marks.get(&mark_char) {
-              let current_pos = self.get_cursor_position();
-              self.previous_position = Some(current_pos);
-              self.move_to_position(line, col);
-              // Track bookmark jump for tutorial
-              if self.tutorial_active {
-                self.tutorial_bookmark_jumped = true;
-              }
-            }
-          }
-          _ => {}
-        }
+        self.begin_pending_input(PendingInput::JumpToMark)?;
         Ok(Some(false))
       }
       _ => Ok(None),

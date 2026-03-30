@@ -1,6 +1,6 @@
 pub use crate::core_state::Editor;
 pub use crate::core_types::{
-  BufferState, EditorMode, EditorState, SplitPosition, ViewMode,
+  BufferState, EditorMode, EditorState, PendingInput, SplitPosition, ViewMode,
 };
 
 use crate::highlights::HighlightData;
@@ -148,7 +148,7 @@ impl Editor {
       settings_fields: [String::new(), String::new(), String::new()],
       settings_editing: false,
       settings_saved_until: None,
-      awaiting_register_key: false,
+      pending_input: None,
     }
   }
 

@@ -1,6 +1,6 @@
 use crossterm::event::{self, KeyCode, KeyModifiers};
 
-use super::core::{Editor, EditorMode};
+use super::core::{Editor, EditorMode, PendingInput};
 
 impl Editor {
   // Handle key events in command mode
@@ -13,28 +13,6 @@ impl Editor {
       "  Command buffer: '{}', cursor_pos: {}",
       self.editor_state.command_buffer, self.editor_state.command_cursor_pos
     ));
-
-    // Consume pending register key for Ctrl+R <register>
-    if self.awaiting_register_key {
-      self.awaiting_register_key = false;
-      if key_event.code == KeyCode::Char('0') {
-        let pos = self.editor_state.command_cursor_pos;
-        let yank_text = self.editor_state.yank_buffer.clone();
-        let clean_text = yank_text.replace('\n', " ").replace('\r', "");
-        self.editor_state.command_buffer.insert_str(pos, &clean_text);
-        self.editor_state.command_cursor_pos += clean_text.len();
-        if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
-          buffer.command_buffer.insert_str(pos, &clean_text);
-          buffer.command_cursor_pos = self.editor_state.command_cursor_pos;
-        }
-        if self.tutorial_active {
-          self.tutorial_paste_performed = true;
-          self.debug_log("Tutorial: paste performed via Ctrl+R 0");
-        }
-      }
-      // Other registers not implemented; key is consumed regardless.
-      return Ok(false);
-    }
 
     // Handle Ctrl+C to exit to normal mode
     if key_event.code == KeyCode::Char('c')
@@ -160,8 +138,7 @@ impl Editor {
       KeyCode::Char('r')
         if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
       {
-        // Mark that the next key should be treated as a register name.
-        self.awaiting_register_key = true;
+        self.pending_input = Some(PendingInput::CommandRegister);
       }
       KeyCode::Char('v')
         if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
