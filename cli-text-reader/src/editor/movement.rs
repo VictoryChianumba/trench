@@ -165,7 +165,25 @@ impl Editor {
 
     if new_line != self.offset + self.cursor_y {
       // Line changed - need to update cursor position properly
-      let viewport_height = self.get_effective_viewport_height();
+      let viewport_height = match &self.view_mode {
+        ViewMode::Normal => self.height.saturating_sub(1),
+        ViewMode::Overlay => self.height.saturating_sub(1),
+        ViewMode::HorizontalSplit => {
+          // In split mode, use the height of the active pane
+          if self.active_pane == 0 {
+            (self.height.saturating_sub(1) as f32 * self.split_ratio) as usize
+          } else {
+            self
+              .height
+              .saturating_sub(1)
+              .saturating_sub(
+                (self.height.saturating_sub(1) as f32 * self.split_ratio)
+                  as usize,
+              )
+              .saturating_sub(1)
+          }
+        }
+      };
       let center_y = viewport_height / 2;
 
       if new_line >= self.offset && new_line < self.offset + viewport_height {
@@ -188,7 +206,11 @@ impl Editor {
     self.cursor_x = new_col;
 
     // Use appropriate centering based on view mode
-    self.center_cursor_with_overscroll(true);
+    match &self.view_mode {
+      ViewMode::Normal => self.center_cursor_with_overscroll(true),
+      ViewMode::Overlay => self.center_cursor_with_overscroll(true),
+      ViewMode::HorizontalSplit => self.center_cursor_with_overscroll(true),
+    }
 
     // No longer need to save state after every movement since we use live state
     // for active buffer

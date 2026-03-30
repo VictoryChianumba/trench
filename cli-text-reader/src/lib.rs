@@ -19,28 +19,10 @@ mod interactive_tutorial_steps;
 mod interactive_tutorial_tests;
 mod interactive_tutorial_utils;
 mod progress;
+mod tutorial;
 mod utils;
-mod voice;
 
-pub use crossterm::event::KeyEvent;
-pub use editor::{Editor, EditorAction};
-pub use ratatui::prelude::{Frame, Rect};
-
-pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
-  editor::draw(frame, area, editor);
-}
-
-pub fn handle_key(key: KeyEvent, editor: &mut Editor) -> EditorAction {
-  editor::handle_key(key, editor)
-}
-
-pub fn tick(editor: &mut Editor) -> EditorAction {
-  editor::tick(editor)
-}
-
-pub fn update_layout(editor: &mut Editor, area: Rect) {
-  editor::update_layout(editor, area);
-}
+use editor::Editor;
 
 pub fn run_cli_text_reader(
   lines: Vec<String>,

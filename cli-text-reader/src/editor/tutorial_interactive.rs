@@ -299,7 +299,6 @@ impl Editor {
       show_cursor: None,
       show_progress: None,
       tutorial_shown: Some(true),
-      ..Default::default()
     };
 
     if let Err(e) = save_config(&config) {

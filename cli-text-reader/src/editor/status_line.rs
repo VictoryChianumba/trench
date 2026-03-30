@@ -2,7 +2,6 @@ use crossterm::{QueueableCommand, cursor::MoveTo, execute};
 use std::io::{self, Write};
 
 use super::core::{Editor, EditorMode};
-use crate::voice::PlaybackStatus;
 
 impl Editor {
   // Draw the status line with mode indicators and position info
@@ -194,9 +193,6 @@ impl Editor {
     &mut self,
     buffer: &mut Vec<u8>,
   ) -> io::Result<()> {
-    // Sync voice status before rendering
-    self.sync_voice_status();
-
     // Draw mode indicators in the status line
     self.draw_mode_indicator_buffered(buffer)?;
 
@@ -207,9 +203,6 @@ impl Editor {
     {
       self.draw_progress_indicator_buffered(buffer)?;
     }
-
-    // Show voice status / error indicator when active
-    self.draw_voice_indicator_buffered(buffer)?;
 
     Ok(())
   }
@@ -246,14 +239,7 @@ impl Editor {
         write!(buffer, "-- TUTORIAL --")?;
       }
       _ => {
-        if self.reading_mode {
-          let label = if self.continuous_reading {
-            "-- READING >> --"
-          } else {
-            "-- READING --"
-          };
-          write!(buffer, "{label}")?;
-        }
+        // Normal mode - just clear the line
       }
     }
 
@@ -294,40 +280,6 @@ impl Editor {
     buffer.queue(crossterm::terminal::Clear(
       crossterm::terminal::ClearType::UntilNewLine,
     ))?;
-
-    Ok(())
-  }
-
-  // Draw voice status in the bottom-left of the status line
-  fn draw_voice_indicator_buffered(
-    &self,
-    buffer: &mut Vec<u8>,
-  ) -> io::Result<()> {
-    let msg = if let Some(err) = &self.voice_error {
-      format!("[Voice: {err}]")
-    } else {
-      match self.voice_status {
-        PlaybackStatus::Loading => {
-          use std::time::{SystemTime, UNIX_EPOCH};
-          const FRAMES: &[char] =
-            &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-          let ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-          let frame = FRAMES[(ms / 100) as usize % FRAMES.len()];
-          format!("[{frame} Loading]")
-        }
-        PlaybackStatus::Playing => "[♪ Playing]".to_string(),
-        PlaybackStatus::Paused => "[⏸ Paused]".to_string(),
-        PlaybackStatus::Idle => return Ok(()),
-      }
-    };
-
-    // Place at bottom-left, one row above the mode line
-    let y = self.height as u16 - 2;
-    buffer.queue(MoveTo(0, y))?;
-    write!(buffer, "{msg}")?;
 
     Ok(())
   }

@@ -1,6 +1,5 @@
 // Editor module - main exports
 
-mod actions;
 mod buffer;
 mod buffer_overlay;
 mod buffer_split;
@@ -18,14 +17,15 @@ mod core;
 mod cursor;
 pub mod demo_content;
 mod demo_executor;
+mod demo_renderer;
+mod display;
 mod display_init;
 mod display_loop;
+mod display_split;
 mod event_handler;
-mod highlight_spans;
 mod highlighting;
 mod highlighting_persistent;
 mod highlighting_selection;
-mod layout;
 mod line_navigation;
 mod movement;
 mod navigation;
@@ -37,20 +37,19 @@ mod normal_navigation_find;
 mod normal_navigation_jumps;
 mod normal_search_visual;
 mod page_navigation;
-mod render_lines;
-mod runtime;
 mod screen_position;
 mod search_mode;
 mod selection;
 mod selection_basic;
 mod selection_text;
 mod selection_words;
-mod settings;
+mod status_line;
 mod text_objects;
 mod text_objects_delimiters;
 mod text_objects_paragraphs;
 mod text_objects_quotes;
 mod toggle_highlight;
+mod tutorial_display;
 mod tutorial_interactive;
 mod tutorial_interactive_completion;
 mod utils;
@@ -59,39 +58,12 @@ mod visual_mode_control;
 mod visual_mode_find;
 mod visual_mode_movement;
 mod visual_mode_objects;
-mod voice_control;
-mod widget;
-mod widgets;
 mod word_navigation;
 mod yank;
 
 // Re-export main structures and functions
-pub use actions::EditorAction;
 pub use commands::handle_command;
 pub use core::{Editor, EditorMode, EditorState};
-
-pub fn draw(
-  frame: &mut ratatui::prelude::Frame,
-  area: ratatui::layout::Rect,
-  editor: &mut Editor,
-) {
-  widget::draw(frame, area, editor);
-}
-
-pub fn handle_key(
-  key: crossterm::event::KeyEvent,
-  editor: &mut Editor,
-) -> EditorAction {
-  editor.handle_key(key)
-}
-
-pub fn tick(editor: &mut Editor) -> EditorAction {
-  editor.tick()
-}
-
-pub fn update_layout(editor: &mut Editor, area: ratatui::layout::Rect) {
-  editor.update_layout(area);
-}
 
 // Tests
 #[cfg(test)]

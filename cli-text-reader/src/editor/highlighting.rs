@@ -7,37 +7,8 @@ use crossterm::{
 use std::io::{Result as IoResult, Write};
 
 use super::core::Editor;
-use ratatui::prelude::Style;
 
 impl Editor {
-  pub fn current_line_style_for_row(&self, row: usize) -> Style {
-    if self.show_highlighter && row == self.cursor_y {
-      Style::default().bg(ratatui::prelude::Color::Rgb(40, 40, 40))
-    } else {
-      Style::default()
-    }
-  }
-
-  pub fn search_match_range_for_line(
-    &self,
-    document_line_index: usize,
-    line: &str,
-  ) -> Option<(usize, usize)> {
-    let match_to_highlight = if self.editor_state.search_preview_active {
-      self.editor_state.search_preview_match
-    } else {
-      self.editor_state.current_match
-    };
-
-    match_to_highlight.and_then(|(line_idx, start, end)| {
-      if line_idx == document_line_index {
-        Some((start.min(line.len()), end.min(line.len())))
-      } else {
-        None
-      }
-    })
-  }
-
   // Highlight current line
   pub fn highlight_current_line(
     &self,

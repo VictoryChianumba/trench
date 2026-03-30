@@ -1,5 +1,4 @@
 use clap::Parser;
-use hygg_shared::normalize_file_path;
 use std::env;
 use std::io::{self, Read};
 
@@ -68,68 +67,18 @@ struct Args {
 }
 
 pub fn which(binary: &str) -> Option<std::path::PathBuf> {
-  if binary.is_empty() || binary.contains('\0') {
-    return None;
-  }
-
-  let extensions = if cfg!(windows) {
-    vec!["", ".exe", ".com", ".bat", ".cmd"]
-  } else {
-    vec![""]
-  };
-
-  let paths = env::var("PATH").ok()?;
-
-  for path in env::split_paths(&paths) {
-    if !path.exists() || !path.is_dir() {
-      continue;
-    }
-
-    for &ext in &extensions {
-      let binary_with_ext = format!("{}{}", binary, ext);
-      let full_path = path.join(&binary_with_ext);
-
-      if full_path.is_file()
-        && let Ok(canonical) = full_path.canonicalize()
-      {
-        return Some(canonical);
+  if let Ok(paths) = env::var("PATH") {
+    for path in env::split_paths(&paths) {
+      let full_path = path.join(binary);
+      if full_path.is_file() {
+        return Some(full_path);
       }
     }
   }
-
-  if cfg!(windows)
-    && let Ok(current_dir) = env::current_dir()
-  {
-    for &ext in &extensions {
-      let binary_with_ext = format!("{}{}", binary, ext);
-      let current_dir_path = current_dir.join(&binary_with_ext);
-
-      if current_dir_path.is_file()
-        && let Ok(canonical) = current_dir_path.canonicalize()
-      {
-        return Some(canonical);
-      }
-    }
-  }
-
   None
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let log_path = dirs::home_dir()
-    .unwrap()
-    .join(".config/hygg/hygg.log");
-  std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-  let log_file = std::fs::OpenOptions::new()
-    .create(true)
-    .append(true)
-    .open(&log_path)
-    .unwrap();
-  env_logger::Builder::new()
-    .target(env_logger::Target::Pipe(Box::new(log_file)))
-    .filter_level(log::LevelFilter::Debug)
-    .init();
-
   let args = Args::parse();
 
   // Check if stdin has content
@@ -248,14 +197,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_file = format!("{file}-{}", uuid::Uuid::new_v4());
 
     let content = if (args.ocr && which("ocrmypdf").is_some()) {
-      // Validate and normalize file path to prevent command injection
-      let canonical_file = match normalize_file_path(&file) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(e) => {
-          eprintln!("Error: Invalid file path: {e}");
-          std::process::exit(1);
-        }
-      };
+      // Validate file path to prevent command injection
+      if let Err(e) = validate_file_path(&file) {
+        eprintln!("Error: Invalid file path: {e}");
+        std::process::exit(1);
+      }
 
       // Additional validation for temp file path
       if temp_file.contains("..")
@@ -272,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       cmd
         .arg("--force-ocr")
         .arg("--") // End of options marker
-        .arg(&canonical_file)
+        .arg(&file)
         .arg(&temp_file)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -324,7 +270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
               if which("pandoc").is_none() {
                 eprintln!(
-                  "pandoc not installed!\n\nFor additional formats, install pandoc:\nsudo apt install pandoc\n# scoop install pandoc\n# brew install pandoc"
+                  "pandoc not installed!\nFor additional formats, install pandoc:\nsudo apt install pandoc"
                 );
               }
               std::process::exit(1);
@@ -379,6 +325,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   Ok(())
 }
 
+// Validate file path to prevent command injection
+fn validate_file_path(file_path: &str) -> Result<(), String> {
+  // Check for dangerous characters that could be used for command injection
+  let dangerous_chars =
+    ['|', '&', ';', '`', '$', '(', ')', '<', '>', '\\', '\n', '\r'];
+
+  if file_path.chars().any(|c| dangerous_chars.contains(&c)) {
+    return Err("File path contains dangerous characters".to_string());
+  }
+
+  // Check for path traversal attempts
+  if file_path.contains("..") {
+    return Err("Path traversal not allowed".to_string());
+  }
+
+  // Check for null bytes
+  if file_path.contains('\0') {
+    return Err("Null bytes not allowed in file path".to_string());
+  }
+
+  // Ensure the file exists and is a regular file
+  let path = std::path::Path::new(file_path);
+  if !path.exists() {
+    return Err("File does not exist".to_string());
+  }
+
+  if !path.is_file() {
+    return Err("Path is not a regular file".to_string());
+  }
+
+  Ok(())
+}
+
 // Convert document to text using pandoc
 fn pandoc_to_text(
   file_path: &str,
@@ -386,11 +365,12 @@ fn pandoc_to_text(
   // Check if pandoc is available
   if which("pandoc").is_none() {
     return Err(
-      "pandoc not found. Install with:\nsudo apt install pandoc\n# scoop install pandoc\n# brew install pandoc".into(),
+      "pandoc not found. Install with: sudo apt install pandoc".into(),
     );
   }
 
-  let canonical_path = normalize_file_path(file_path)?;
+  // Validate file path
+  validate_file_path(file_path)?;
 
   // Run pandoc with plain text output
   let mut cmd = std::process::Command::new("pandoc");
@@ -398,7 +378,7 @@ fn pandoc_to_text(
     .arg("--to=plain")
     .arg("--wrap=none")
     .arg("--")
-    .arg(canonical_path)
+    .arg(file_path)
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());

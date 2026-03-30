@@ -7,62 +7,6 @@ use std::io::{Result as IoResult, Write};
 use super::core::{Editor, EditorMode};
 
 impl Editor {
-  pub fn selection_ranges_for_line(
-    &self,
-    current_line_idx: usize,
-    line: &str,
-  ) -> Vec<(usize, usize)> {
-    let (Some(start), Some(end)) =
-      (self.editor_state.selection_start, self.editor_state.selection_end)
-    else {
-      return Vec::new();
-    };
-
-    let is_line_mode = self.editor_state.mode == EditorMode::VisualLine
-      || (self.editor_state.visual_selection_active
-        && self.editor_state.previous_visual_mode
-          == Some(EditorMode::VisualLine));
-
-    if is_line_mode {
-      let min_line = start.0.min(end.0);
-      let max_line = start.0.max(end.0);
-      return if current_line_idx >= min_line && current_line_idx <= max_line {
-        vec![(0, line.len())]
-      } else {
-        Vec::new()
-      };
-    }
-
-    if start.0 == end.0 {
-      if current_line_idx != start.0 {
-        return Vec::new();
-      }
-      let start_col = start.1.min(end.1).min(line.len());
-      let end_col = start.1.max(end.1).min(line.len());
-      return (start_col < end_col)
-        .then_some(vec![(start_col, end_col)])
-        .unwrap_or_default();
-    }
-
-    let min_line = start.0.min(end.0);
-    let max_line = start.0.max(end.0);
-    if current_line_idx < min_line || current_line_idx > max_line {
-      return Vec::new();
-    }
-
-    if current_line_idx == min_line {
-      let start_col = if start.0 < end.0 { start.1 } else { end.1 };
-      return vec![(start_col.min(line.len()), line.len())];
-    }
-
-    if current_line_idx == max_line {
-      let end_col = if start.0 > end.0 { start.1 } else { end.1 };
-      return vec![(0, end_col.min(line.len()))];
-    }
-
-    vec![(0, line.len())]
-  }
-
   // Highlight selected text in visual modes
   pub fn highlight_selection(
     &self,

@@ -366,7 +366,9 @@ version = "0.1.19"
 dependencies = [
  "anyhow",
  "chrono",
+ "crossterm 0.28.1",
  "dirs 6.0.0",
+ "ratatui",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1425,10 +1427,6 @@ dependencies = [
  "cli-justify",
  "cli-pdf-to-text",
  "cli-text-reader",
- "dirs 6.0.0",
- "env_logger",
- "hygg-shared",
- "log",
  "redirect-stderr",
  "uuid",
 ]
@@ -3639,6 +3637,7 @@ name = "tentative"
 version = "0.1.19"
 dependencies = [
  "arboard",
+ "chat",
  "chrono",
  "crossterm 0.28.1",
  "dirs 5.0.1",

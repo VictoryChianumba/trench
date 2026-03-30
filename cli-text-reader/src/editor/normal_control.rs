@@ -115,10 +115,6 @@ impl Editor {
 
         Ok(Some(false))
       }
-      KeyCode::Char('s') | KeyCode::Char('S') => {
-        self.open_settings_popup();
-        Ok(Some(false))
-      }
       KeyCode::Char(':') => {
         self.debug_log_event(
           "normal_mode",

@@ -131,12 +131,12 @@ impl Editor {
         if self.view_mode == super::core::ViewMode::HorizontalSplit {
           buffer.viewport_height
         } else {
-          self.get_effective_viewport_height()
+          self.height.saturating_sub(1)
         };
 
       // Ensure viewport_height is reasonable
       let viewport_height =
-        base_viewport_height.max(3).min(self.get_effective_viewport_height());
+        base_viewport_height.max(3).min(self.height.saturating_sub(1));
       self.debug_log(&format!("  Viewport height: base={base_viewport_height}, adjusted={viewport_height}"));
 
       // Enhanced cursor validation with better edge case handling

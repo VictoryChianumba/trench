@@ -1,7 +1,4 @@
-use super::{
-  core::{BufferState, Editor, EditorMode, SplitPosition, ViewMode},
-  layout,
-};
+use super::core::{BufferState, Editor, EditorMode, SplitPosition, ViewMode};
 
 impl Editor {
   // Create horizontal split with command output
@@ -30,22 +27,13 @@ impl Editor {
       self.debug_log("  WARNING: Buffer 0 does not exist!");
     }
 
-    let (top_height, bottom_height) = layout::split_layout(self, self.viewport)
-      .map(|split_layout| {
-        (
-          split_layout.top_area.height as usize,
-          split_layout.bottom_area.height as usize,
-        )
-      })
-      .unwrap_or_else(|| {
-        let viewport_height = self.get_effective_viewport_height();
-        let top_height = ((viewport_height as f32) * self.split_ratio) as usize;
-        let bottom_height = viewport_height.saturating_sub(top_height).max(1);
-        (top_height.max(1), bottom_height)
-      });
+    // Calculate split heights
+    let terminal_height = self.height.saturating_sub(1); // Subtract status line
+    let top_height = (terminal_height as f32 * self.split_ratio) as usize;
+    let bottom_height = terminal_height.saturating_sub(top_height);
 
     self.debug_log(&format!(
-      "  Split heights: top={top_height}, bottom={bottom_height}"
+      "  Terminal height: {terminal_height}, Top: {top_height}, Bottom: {bottom_height}"
     ));
 
     // Determine which buffer should be shown in the top pane
@@ -159,9 +147,8 @@ impl Editor {
     };
 
     // Restore the appropriate buffer to full height
-    let restored_viewport_height = self.get_effective_viewport_height();
     if let Some(buffer) = self.buffers.get_mut(restore_buffer_idx) {
-      buffer.viewport_height = restored_viewport_height;
+      buffer.viewport_height = self.height.saturating_sub(1);
       buffer.split_height = None;
     }
 

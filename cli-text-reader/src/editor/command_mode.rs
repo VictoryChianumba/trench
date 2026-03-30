@@ -1,12 +1,14 @@
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event as CEvent, KeyCode, KeyModifiers};
+use std::io;
 
-use super::core::{Editor, EditorMode, PendingInput};
+use super::core::{Editor, EditorMode};
 
 impl Editor {
   // Handle key events in command mode
   pub fn handle_command_mode_event(
     &mut self,
     key_event: event::KeyEvent,
+    stdout: &mut io::Stdout,
   ) -> Result<bool, Box<dyn std::error::Error>> {
     self.debug_log(&format!("handle_command_mode_event: key={key_event:?}"));
     self.debug_log(&format!(
@@ -48,7 +50,7 @@ impl Editor {
       }
       KeyCode::Enter => {
         self.debug_log("  Enter pressed, executing command");
-        let should_exit = self.execute_command()?;
+        let should_exit = self.execute_command(stdout)?;
         self.debug_log(&format!("  execute_command returned: {should_exit}"));
         if should_exit {
           return Ok(true);
@@ -138,7 +140,45 @@ impl Editor {
       KeyCode::Char('r')
         if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
       {
-        self.pending_input = Some(PendingInput::CommandRegister);
+        // Ctrl+R in command mode - paste from register
+        if let CEvent::Key(register_key) = event::read()?
+          && let KeyCode::Char('0') = register_key.code
+        {
+          // Paste from yank buffer (register 0) at cursor position
+          let pos = self.editor_state.command_cursor_pos;
+          let yank_text = self.editor_state.yank_buffer.clone();
+          self.debug_log_event(
+            "command_mode",
+            "paste_register_0",
+            &format!("yank_buffer='{yank_text}', pos={pos}"),
+          );
+
+          // Remove newlines from yanked text to prevent command execution
+          let clean_text = yank_text.replace('\n', " ").replace('\r', "");
+          self.debug_log_state("command_mode", "clean_text", &clean_text);
+
+          self.editor_state.command_buffer.insert_str(pos, &clean_text);
+          self.editor_state.command_cursor_pos += clean_text.len();
+
+          // Also update active buffer's command buffer
+          if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
+            buffer.command_buffer.insert_str(pos, &clean_text);
+            buffer.command_cursor_pos = self.editor_state.command_cursor_pos;
+          }
+
+          // Track paste for tutorial
+          if self.tutorial_active {
+            self.tutorial_paste_performed = true;
+            self.debug_log("Tutorial: paste performed via Ctrl+R 0");
+          }
+
+          self.debug_log_state(
+            "command_mode",
+            "new_command_buffer",
+            &self.editor_state.command_buffer,
+          );
+        }
+        // Other registers not implemented yet
       }
       KeyCode::Char('v')
         if key_event.modifiers.contains(KeyModifiers::CONTROL) =>

@@ -1,25 +1,24 @@
-use super::{core::Editor, runtime};
+use crossterm::{
+  cursor::{Hide, Show},
+  execute,
+  terminal::{self, Clear, ClearType},
+};
+use std::io::{self, IsTerminal, Result as IoResult};
+
+use super::core::{Editor, EditorMode, ViewMode};
 use crate::bookmarks::load_bookmarks;
 use crate::config::load_config;
 use crate::highlights::load_highlights;
 use crate::progress::load_progress;
-use crate::voice::playback::PlaybackController;
 
 impl Editor {
   pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdout = io::stdout();
     let config = load_config();
 
     self.show_highlighter = config.enable_line_highlighter.unwrap_or(true);
     self.show_cursor = config.show_cursor.unwrap_or(true);
     self.show_progress = config.show_progress.unwrap_or(true);
-
-    // Initialise voice controller if an API key is configured
-    if !config.elevenlabs_api_key.is_empty() {
-      self.voice_controller = Some(PlaybackController::new(
-        config.elevenlabs_api_key.clone(),
-        config.voice_id.clone(),
-      ));
-    }
 
     // Check if tutorial should be shown
     let tutorial_enabled = config.enable_tutorial.unwrap_or(true);
@@ -105,6 +104,11 @@ impl Editor {
       }
     };
 
+    if std::io::stdout().is_terminal() {
+      execute!(stdout, terminal::EnterAlternateScreen, Hide)?;
+      terminal::enable_raw_mode()?;
+    }
+
     // Show tutorial on first launch or start demo mode
     if self.tutorial_demo_mode {
       let demo_id = self.demo_id.unwrap_or(0); // Default to marketing demo if no ID specified
@@ -115,8 +119,20 @@ impl Editor {
       self.show_interactive_tutorial()?;
     }
 
-    self.apply_initial_layout(skip_first_center);
-    runtime::run(self)?;
+    self.main_loop(&mut stdout, skip_first_center)?;
+
+    self.cleanup(&mut stdout)?;
+    Ok(())
+  }
+
+  pub fn cleanup(
+    &self,
+    stdout: &mut io::Stdout,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    if std::io::stdout().is_terminal() {
+      execute!(stdout, Show, terminal::LeaveAlternateScreen)?;
+      terminal::disable_raw_mode()?;
+    }
     Ok(())
   }
 }

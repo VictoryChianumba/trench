@@ -4,6 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+### /checkpoint
+Saves current progress with a commit message.
+Usage: /checkpoint "description of what was done"
+Command: git add -A && git commit -m "$1"
+
 ```sh
 # Build and run (primary development workflow)
 cargo run --release -- test-data/pdf/pdfreference1.7old.pdf

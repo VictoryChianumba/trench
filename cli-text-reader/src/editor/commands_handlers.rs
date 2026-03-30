@@ -292,7 +292,6 @@ impl Editor {
       show_cursor: Some(self.show_cursor),
       show_progress: Some(self.show_progress),
       tutorial_shown: None, // Keep existing value
-      ..Default::default()
     };
 
     if let Err(e) = save_config(&config) {
@@ -397,7 +396,6 @@ impl Editor {
       show_cursor: None,             // Keep existing value
       show_progress: None,           // Keep existing value
       tutorial_shown: None,          // Keep existing value
-      ..Default::default()
     };
 
     if let Err(e) = save_config(&config) {
@@ -448,7 +446,6 @@ impl Editor {
       show_cursor: None,             // Keep existing value
       show_progress: None,           // Keep existing value
       tutorial_shown: None,          // Keep existing value
-      ..Default::default()
     };
 
     if let Err(e) = save_config(&config) {

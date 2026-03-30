@@ -13,64 +13,6 @@ pub(super) enum HighlightType {
 }
 
 impl Editor {
-  pub fn persistent_highlight_ranges_for_line(
-    &self,
-    current_line_idx: usize,
-    line: &str,
-  ) -> Vec<(usize, usize)> {
-    let (abs_line_start, abs_line_end) =
-      self.absolute_line_range_for(current_line_idx, line);
-    let line_highlights =
-      self.highlights.get_highlights_for_range(abs_line_start, abs_line_end);
-
-    let mut ranges = Vec::new();
-    for highlight in line_highlights {
-      let start = if highlight.start <= abs_line_start {
-        0
-      } else {
-        highlight.start - abs_line_start
-      };
-      let end = if highlight.end >= abs_line_end {
-        line.len()
-      } else {
-        highlight.end - abs_line_start
-      };
-
-      if end > start && start < line.len() {
-        ranges.push((start.min(line.len()), end.min(line.len())));
-      }
-    }
-
-    ranges.sort_by_key(|range| range.0);
-    let mut merged_ranges: Vec<(usize, usize)> = Vec::new();
-    for (start, end) in ranges {
-      if let Some((_, previous_end)) = merged_ranges.last_mut()
-        && start <= *previous_end
-      {
-        *previous_end = (*previous_end).max(end);
-      } else {
-        merged_ranges.push((start, end));
-      }
-    }
-
-    merged_ranges
-  }
-
-  fn absolute_line_range_for(
-    &self,
-    current_line_idx: usize,
-    line: &str,
-  ) -> (usize, usize) {
-    let mut abs_line_start = 0;
-    for i in 0..current_line_idx {
-      if i < self.lines.len() {
-        abs_line_start += self.lines[i].len() + 1;
-      }
-    }
-
-    (abs_line_start, abs_line_start + line.len())
-  }
-
   // Highlight persistent text highlights
   pub fn highlight_persistent(
     &self,

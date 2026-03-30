@@ -1,8 +1,13 @@
+use crossterm::terminal;
+use std::io;
+
 use super::core::{Editor, ViewMode};
+use crate::config::{AppConfig, save_config};
 
 impl Editor {
   pub fn execute_command(
     &mut self,
+    _stdout: &mut io::Stdout,
   ) -> Result<bool, Box<dyn std::error::Error>> {
     let cmd = self.get_active_command_buffer().trim().to_string();
     self.debug_log_event("command", "execute_command", &format!("cmd='{cmd}'"));

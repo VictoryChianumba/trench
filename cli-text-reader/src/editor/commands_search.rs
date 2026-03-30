@@ -129,7 +129,6 @@ impl Editor {
     }
   }
   // Find first match from current cursor position (for new searches)
-  #[allow(dead_code)]
   pub fn find_first_match(&mut self, forward: bool) {
     if self.editor_state.search_query.is_empty() {
       return;
@@ -298,7 +297,7 @@ impl Editor {
   pub fn center_on_match(&mut self) {
     if let Some((line_idx, col_idx, _)) = self.editor_state.current_match {
       // Center the view
-      let content_height = self.get_effective_viewport_height();
+      let content_height = self.height.saturating_sub(1);
       let half_height = (content_height / 2) as i32;
       let new_offset = line_idx as i32 - half_height;
       self.offset = if new_offset < 0 {
@@ -321,7 +320,7 @@ impl Editor {
     if let Some((line_idx, col_idx, _)) = self.editor_state.search_preview_match
     {
       // Center the view
-      let content_height = self.get_effective_viewport_height();
+      let content_height = self.height.saturating_sub(1);
       let half_height = (content_height / 2) as i32;
       let new_offset = line_idx as i32 - half_height;
       self.offset = if new_offset < 0 {

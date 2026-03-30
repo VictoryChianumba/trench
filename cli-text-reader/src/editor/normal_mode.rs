@@ -20,11 +20,6 @@ impl Editor {
       return Ok(result);
     }
 
-    // Try voice keys first (r, R, Space for TTS control)
-    if let Some(result) = self.handle_voice_keys(key_event)? {
-      return Ok(result);
-    }
-
     // Try control keys first (mode switching, etc.)
     if let Some(result) = self.handle_control_keys(key_event)? {
       return Ok(result);

@@ -1,13 +1,12 @@
 pub use crate::core_state::Editor;
 pub use crate::core_types::{
-  BufferState, EditorMode, EditorState, PendingInput, SplitPosition, ViewMode,
+  BufferState, EditorMode, EditorState, SplitPosition, ViewMode,
 };
 
 use crate::highlights::HighlightData;
 use crate::progress::generate_hash;
 use arboard::Clipboard;
 use crossterm::terminal;
-use ratatui::layout::Rect;
 
 impl Editor {
   pub fn new(lines: Vec<String>, col: usize) -> Self {
@@ -80,7 +79,6 @@ impl Editor {
       offset: 0,
       width,
       height,
-      viewport: Rect::new(0, 0, width as u16, height as u16),
       show_highlighter: true,
       editor_state: EditorState::new(),
       document_hash,
@@ -134,21 +132,6 @@ impl Editor {
       last_saved_viewport_offset: 0,
       cursor_currently_visible: true,
       buffer_just_switched: false,
-      voice_controller: None,
-      voice_status: crate::voice::PlaybackStatus::Idle,
-      voice_error: None,
-      voice_para_start: 0,
-      voice_para_end: 0,
-      voice_started_at: None,
-      voice_chars_before: 0,
-      reading_mode: false,
-      continuous_reading: false,
-      show_settings: false,
-      settings_cursor: 0,
-      settings_fields: [String::new(), String::new(), String::new()],
-      settings_editing: false,
-      settings_saved_until: None,
-      pending_input: None,
     }
   }
 
@@ -191,26 +174,6 @@ impl Editor {
   pub fn calculate_dimensions(&self) -> usize {
     // Always use full height minus status line
     self.height.saturating_sub(1)
-  }
-
-  pub fn update_layout(&mut self, area: Rect) {
-    let layout_changed = self.viewport != area;
-    self.viewport = area;
-    self.width = area.width as usize;
-    self.height = area.height as usize;
-
-    let viewport_height =
-      self.viewport.height.saturating_sub(1).max(1) as usize;
-    if let Some(buffer) = self.buffers.get_mut(self.active_buffer) {
-      buffer.viewport_height = viewport_height;
-    }
-
-    if layout_changed && self.initial_setup_complete {
-      self.center_cursor();
-    } else if layout_changed {
-      self.mark_dirty();
-    }
-    self.force_clear |= layout_changed;
   }
 
   // Helper methods to access active buffer's mode and command state
@@ -302,10 +265,10 @@ impl Editor {
       if let Some(buffer) = self.buffers.get(self.active_buffer) {
         buffer.viewport_height
       } else {
-        self.viewport.height.saturating_sub(1) as usize
+        self.height.saturating_sub(1)
       }
     } else {
-      self.viewport.height.saturating_sub(1) as usize
+      self.height.saturating_sub(1)
     }
   }
 }

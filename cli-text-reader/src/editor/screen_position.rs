@@ -2,7 +2,7 @@ use super::core::Editor;
 
 impl Editor {
   pub fn get_screen_position(&self, position: char) -> (usize, usize) {
-    let viewport_height = self.get_effective_viewport_height();
+    let viewport_height = self.height.saturating_sub(1);
 
     match position {
       'H' => {
