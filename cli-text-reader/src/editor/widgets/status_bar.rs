@@ -1,7 +1,6 @@
 use ratatui::prelude::*;
 
 use crate::editor::{Editor, EditorMode};
-use crate::voice::PlaybackStatus;
 
 pub fn build_status_line(editor: &Editor) -> Line<'static> {
   let left = match editor.get_active_mode() {
@@ -28,26 +27,7 @@ pub fn build_status_line(editor: &Editor) -> Line<'static> {
     }
   };
 
-  let voice_indicator: Option<String> = if let Some(err) = &editor.voice_error {
-    Some(format!("[Voice: {err}]"))
-  } else {
-    match editor.voice_status {
-      PlaybackStatus::Loading => {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        const FRAMES: &[char] =
-          &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let ms = SystemTime::now()
-          .duration_since(UNIX_EPOCH)
-          .unwrap_or_default()
-          .as_millis();
-        let frame = FRAMES[(ms / 100) as usize % FRAMES.len()];
-        Some(format!("[{frame} Loading]"))
-      }
-      PlaybackStatus::Playing => Some("[♪ Playing]".to_string()),
-      PlaybackStatus::Paused => Some("[⏸ Paused]".to_string()),
-      PlaybackStatus::Idle => None,
-    }
-  };
+  let voice_indicator = editor.voice_status_label();
 
   let progress = if editor.show_progress && !editor.tutorial_demo_mode {
     let pos = (editor.offset + editor.cursor_y + 1).min(editor.total_lines);

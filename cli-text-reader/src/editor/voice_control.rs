@@ -153,6 +153,101 @@ impl Editor {
   // Helpers
   // -----------------------------------------------------------------------
 
+  pub fn voice_rendering_active(&self) -> bool {
+    let voice_playing = matches!(self.voice_status, PlaybackStatus::Playing);
+    if !voice_playing {
+      return false;
+    }
+
+    let cursor_line = self.offset + self.cursor_y;
+    let detached = self.reading_mode
+      && (cursor_line < self.voice_para_start
+        || cursor_line > self.voice_para_end);
+    !detached
+  }
+
+  pub fn active_voice_word(&self) -> Option<(usize, usize, usize)> {
+    if !self.voice_rendering_active() {
+      return None;
+    }
+
+    let estimated_char_offset = if let Some(started) = self.voice_started_at {
+      let elapsed_chars = (started.elapsed().as_secs_f32() * 13.0) as usize;
+      self.voice_chars_before.saturating_add(elapsed_chars)
+    } else {
+      0
+    };
+
+    let paragraph_end =
+      self.voice_para_end.min(self.lines.len().saturating_sub(1));
+    let mut char_pos = 0usize;
+
+    for document_line_index in self.voice_para_start..=paragraph_end {
+      let line = &self.lines[document_line_index];
+      let line_end = char_pos + line.len();
+      if estimated_char_offset <= line_end {
+        let column =
+          estimated_char_offset.saturating_sub(char_pos).min(line.len());
+        let (word_start, word_end) = Self::find_word_at(line, column);
+        return Some((document_line_index, word_start, word_end));
+      }
+      char_pos = line_end + 1;
+    }
+
+    None
+  }
+
+  pub fn voice_status_label(&self) -> Option<String> {
+    if let Some(err) = &self.voice_error {
+      return Some(format!("[Voice: {err}]"));
+    }
+
+    match self.voice_status {
+      PlaybackStatus::Loading => {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        const FRAMES: &[char] =
+          &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let ms = SystemTime::now()
+          .duration_since(UNIX_EPOCH)
+          .unwrap_or_default()
+          .as_millis();
+        let frame = FRAMES[(ms / 100) as usize % FRAMES.len()];
+        Some(format!("[{frame} Loading]"))
+      }
+      PlaybackStatus::Playing => Some("[♪ Playing]".to_string()),
+      PlaybackStatus::Paused => Some("[⏸ Paused]".to_string()),
+      PlaybackStatus::Idle => None,
+    }
+  }
+
+  pub fn voice_line_dimmed(&self, document_line_index: usize) -> bool {
+    self.voice_rendering_active()
+      && (document_line_index < self.voice_para_start
+        || document_line_index > self.voice_para_end)
+  }
+
+  fn find_word_at(s: &str, col: usize) -> (usize, usize) {
+    let col = col.min(s.len());
+    let col = (0..=col).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+    let is_word = |c: char| c.is_alphanumeric() || c == '\'' || c == '\u{2019}';
+
+    let start = s[..col]
+      .rfind(|c: char| !is_word(c))
+      .map(|i| i + s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1))
+      .unwrap_or(0);
+    let end =
+      s[col..].find(|c: char| !is_word(c)).map(|i| col + i).unwrap_or(s.len());
+
+    if start >= end {
+      let next = ((col + 1)..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
+      (col, next)
+    } else {
+      (start, end)
+    }
+  }
+
   /// Sync voice_status, voice_error, and playing_info from the controller.
   pub fn sync_voice_status(&mut self) {
     if let Some(vc) = &self.voice_controller {
