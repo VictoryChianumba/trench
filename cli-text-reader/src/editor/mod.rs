@@ -28,6 +28,7 @@ mod highlight_spans;
 mod highlighting;
 mod highlighting_persistent;
 mod highlighting_selection;
+mod layout;
 mod line_navigation;
 mod movement;
 mod navigation;

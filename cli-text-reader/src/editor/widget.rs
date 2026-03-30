@@ -5,8 +5,8 @@ use ratatui::{
 };
 
 use super::{
-  core::{Editor, EditorMode},
-  render_lines,
+  core::{Editor, EditorMode, ViewMode},
+  layout, render_lines,
 };
 use crate::voice::PlaybackStatus;
 
@@ -17,19 +17,63 @@ pub fn draw(frame: &mut Frame, area: Rect, editor: &mut Editor) {
 
   editor.update_layout(area);
 
+  // Layout: content rows (or split content) + 1-row status line.
   let [content_area, status_area] =
     Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-  let content = render_lines::build_viewport_lines(editor, content_area)
-    .into_iter()
-    .map(|line| line.into_line())
-    .collect::<Vec<_>>();
-  frame.render_widget(Paragraph::new(content), content_area);
+  match editor.view_mode {
+    ViewMode::HorizontalSplit => {
+      draw_split(frame, editor, content_area);
+    }
+    ViewMode::Normal | ViewMode::Overlay => {
+      let content = render_lines::build_viewport_lines(editor, content_area)
+        .into_iter()
+        .map(|line| line.into_line())
+        .collect::<Vec<_>>();
+      frame.render_widget(Paragraph::new(content), content_area);
+    }
+  }
 
   let status = build_status_line(editor);
   frame.render_widget(Paragraph::new(status), status_area);
 
   set_cursor(frame, editor, content_area, status_area);
+}
+
+/// Render a horizontal split: top pane ─── separator ─── bottom pane.
+fn draw_split(frame: &mut Frame, editor: &mut Editor, area: Rect) {
+  let Some(split_layout) = layout::split_layout(editor, area) else {
+    return;
+  };
+  layout::sync_split_viewports(editor, &split_layout);
+
+  let top_lines = render_lines::build_pane_lines(
+    editor,
+    split_layout.top_buffer_idx,
+    split_layout.top_area,
+  )
+  .into_iter()
+  .map(|line| line.into_line())
+  .collect::<Vec<_>>();
+  frame.render_widget(Paragraph::new(top_lines), split_layout.top_area);
+
+  frame.render_widget(
+    Paragraph::new(Line::from(Span::styled(
+      "─".repeat(split_layout.separator_area.width as usize),
+      Style::default().fg(Color::DarkGray),
+    ))),
+    split_layout.separator_area,
+  );
+
+  let bottom_lines = render_lines::build_pane_lines(
+    editor,
+    split_layout.bottom_buffer_idx,
+    split_layout.bottom_area,
+  )
+  .into_iter()
+  .map(|line| line.into_line())
+  .collect::<Vec<_>>();
+  frame.render_widget(Paragraph::new(bottom_lines), split_layout.bottom_area);
 }
 
 fn build_status_line(editor: &Editor) -> Line<'static> {
@@ -111,13 +155,30 @@ fn set_cursor(
     return;
   }
 
-  let center_offset = render_lines::content_x_offset(editor, content_area);
+  let normal_cursor_area = if editor.view_mode == ViewMode::HorizontalSplit {
+    layout::split_layout(editor, content_area)
+      .map(|split_layout| {
+        if editor.active_pane == 0 {
+          split_layout.top_area
+        } else {
+          split_layout.bottom_area
+        }
+      })
+      .unwrap_or(content_area)
+  } else {
+    content_area
+  };
+  let center_offset =
+    render_lines::content_x_offset(editor, normal_cursor_area);
 
   match editor.get_active_mode() {
     EditorMode::Normal | EditorMode::VisualChar | EditorMode::VisualLine => {
-      let cursor_x = content_area.x + center_offset + editor.cursor_x as u16;
-      let cursor_y = content_area.y + editor.cursor_y as u16;
-      if cursor_y < content_area.bottom() && cursor_x < content_area.right() {
+      let cursor_x =
+        normal_cursor_area.x + center_offset + editor.cursor_x as u16;
+      let cursor_y = normal_cursor_area.y + editor.cursor_y as u16;
+      if cursor_y < normal_cursor_area.bottom()
+        && cursor_x < normal_cursor_area.right()
+      {
         frame.set_cursor_position((cursor_x, cursor_y));
       }
     }

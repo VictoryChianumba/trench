@@ -74,6 +74,83 @@ pub fn content_x_offset(editor: &Editor, area: Rect) -> u16 {
   }
 }
 
+/// Build lines for one pane in a horizontal split.
+///
+/// `buffer_idx` selects which `BufferState` to render.
+/// Voice effects are applied only for the main document buffer (index 0 in
+/// normal mode, or whichever buffer carries the document in tutorial mode).
+pub fn build_pane_lines(
+  editor: &Editor,
+  buffer_idx: usize,
+  area: Rect,
+) -> Vec<RenderedLine> {
+  let Some(buffer) = editor.buffers.get(buffer_idx) else {
+    return vec![];
+  };
+
+  let lines = &buffer.lines;
+  let offset = buffer.offset;
+  // cursor_y is relative to this buffer's viewport
+  let cursor_y = buffer.cursor_y;
+  let is_active_pane = buffer_idx == editor.active_buffer;
+
+  // Voice effects only on the primary document buffer (buf 0 in normal mode)
+  let is_doc_buffer = buffer_idx == 0;
+  let voice_playing = is_doc_buffer && is_voice_rendering_active(editor);
+  let voice_word = voice_playing.then(|| active_voice_word(editor)).flatten();
+
+  let padding = " ".repeat(content_x_offset(editor, area) as usize);
+
+  (0..area.height as usize)
+    .map(|screen_row| {
+      let document_line_index = offset + screen_row;
+      let is_current_line = is_active_pane && screen_row == cursor_y;
+      let is_overscroll_blank = document_line_index >= lines.len();
+      let is_dimmed_line = voice_playing
+        && !is_overscroll_blank
+        && (document_line_index < editor.voice_para_start
+          || document_line_index > editor.voice_para_end);
+
+      let line_style = if is_current_line && editor.show_highlighter {
+        Style::default().bg(Color::Rgb(40, 40, 40))
+      } else {
+        Style::default()
+      };
+
+      let content = if is_overscroll_blank {
+        String::new()
+      } else {
+        lines[document_line_index].clone()
+      };
+
+      // For the active pane, apply full highlight compositor.
+      // For inactive pane, skip selection/search highlights.
+      let doc_idx_opt = (!is_overscroll_blank).then_some(document_line_index);
+      let highlight_doc_idx = if is_active_pane { doc_idx_opt } else { None };
+
+      RenderedLine {
+        document_line_index: doc_idx_opt,
+        spans: highlight_spans::build_styled_spans(
+          editor,
+          highlight_doc_idx,
+          &content,
+          &padding,
+          if is_dimmed_line {
+            Style::default().fg(Color::DarkGray)
+          } else {
+            Style::default()
+          },
+          voice_style_ranges(document_line_index, &content, voice_word),
+        ),
+        line_style,
+        is_current_line,
+        is_dimmed_line,
+        is_overscroll_blank,
+      }
+    })
+    .collect()
+}
+
 fn voice_style_ranges(
   document_line_index: usize,
   content: &str,
