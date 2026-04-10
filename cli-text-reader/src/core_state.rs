@@ -7,6 +7,7 @@ use super::core_types::{BufferState, EditorState, ViewMode};
 use crate::demo_script::DemoScript;
 use crate::highlights::HighlightData;
 use crate::interactive_tutorial_buffer::TutorialSuccessCondition;
+use crate::voice::playback::{PlaybackController, PlaybackStatus};
 
 pub struct Editor {
   pub lines: Vec<String>,
@@ -76,4 +77,21 @@ pub struct Editor {
   pub cursor_currently_visible: bool,
   // Track if we just switched buffers to skip centering
   pub buffer_just_switched: bool,
+  // Voice / TTS state
+  pub voice_controller: Option<PlaybackController>,
+  pub voice_status: PlaybackStatus,
+  pub voice_error: Option<String>,
+  pub voice_para_start: usize,
+  pub voice_para_end: usize,
+  pub voice_started_at: Option<Instant>,
+  pub voice_chars_before: usize,
+  // Reading mode
+  pub reading_mode: bool,
+  pub continuous_reading: bool,
+  // Settings popup state
+  pub show_settings: bool,
+  pub settings_cursor: usize,
+  pub settings_fields: [String; 3],
+  pub settings_editing: bool,
+  pub settings_saved_until: Option<Instant>,
 }

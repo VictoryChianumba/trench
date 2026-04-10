@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::provider::ChatProvider;
 
 pub struct ProviderRegistry {
-    providers: HashMap<String, Box<dyn ChatProvider>>,
+    providers: HashMap<String, Arc<dyn ChatProvider>>,
 }
 
 impl ProviderRegistry {
@@ -12,11 +13,11 @@ impl ProviderRegistry {
     }
 
     pub fn register(&mut self, name: impl Into<String>, provider: Box<dyn ChatProvider>) {
-        self.providers.insert(name.into(), provider);
+        self.providers.insert(name.into(), Arc::from(provider));
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn ChatProvider> {
-        self.providers.get(name).map(|p| p.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn ChatProvider>> {
+        self.providers.get(name).cloned()
     }
 
     pub fn names(&self) -> Vec<&str> {

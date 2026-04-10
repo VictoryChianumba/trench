@@ -5,6 +5,7 @@ pub use crate::core_types::{
 
 use crate::highlights::HighlightData;
 use crate::progress::generate_hash;
+use crate::voice::playback::{PlaybackController, PlaybackStatus};
 use arboard::Clipboard;
 use crossterm::terminal;
 
@@ -132,6 +133,32 @@ impl Editor {
       last_saved_viewport_offset: 0,
       cursor_currently_visible: true,
       buffer_just_switched: false,
+      // Voice / TTS — initialise from config if a key is configured
+      voice_controller: {
+        let cfg = crate::config::load_config();
+        if cfg.elevenlabs_api_key.is_empty() {
+          None
+        } else {
+          Some(PlaybackController::new(
+            cfg.elevenlabs_api_key,
+            cfg.voice_id,
+          ))
+        }
+      },
+      voice_status: PlaybackStatus::Idle,
+      voice_error: None,
+      voice_para_start: 0,
+      voice_para_end: 0,
+      voice_started_at: None,
+      voice_chars_before: 0,
+      reading_mode: false,
+      continuous_reading: false,
+      // Settings popup
+      show_settings: false,
+      settings_cursor: 0,
+      settings_fields: [String::new(), String::new(), String::new()],
+      settings_editing: false,
+      settings_saved_until: None,
     }
   }
 

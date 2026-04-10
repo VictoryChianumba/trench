@@ -86,6 +86,8 @@ pub fn create_session(title: String, provider: Option<String>) -> ChatSession {
         updated_at: now,
         messages: Vec::new(),
         provider,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
     }
 }
 

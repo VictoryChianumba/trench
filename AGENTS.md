@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Commands
 
@@ -124,74 +124,3 @@ Items are sorted by `published_at` descending after each batch. Cache is written
 ### UI (`src/ui/layout.rs`)
 
 Single `draw(frame, app)` entry point. Feed view: tab bar → search row → item table + details panel → status bar with braille spinner during loading. Reader view: full-screen content with header bar. Details panel shows upvote count for HuggingFace items.
-
----
-
-# Tentative — TODO Checklist
-
-## Bugs to fix
-- [ ] Voice mode broken in hygg rewrite (fix after ElevenLabs credits topped up)
-- [ ] Chat scrolling not smooth — key repeat and trackpad inertia (partially fixed)
-- [ ] Raw ANSI escape codes leaking into right pane in reader mode
-- [ ] Notes opening on vim `n` keypress in reader mode (fix with leader key)
-
-## Leader key (Ctrl+T) — app-wide
-- [ ] Implement Ctrl+T as global leader key for all Tentative keybindings
-- [ ] Hygg vim keybindings remain unchanged (no leader needed)
-- [ ] Update footer to always show `Ldr: ctrl+t` and `Ldr+[key]` for all bindings
-- [ ] Full keybinding descriptions reserved for help screen only
-
-## Chat panel redesign
-- [ ] Move chat from right pane to bottom panel (Feynman-style)
-- [ ] Chat panel height = one full screen height, fixed (not additive)
-- [ ] Chat streams below main panes, scrollable within its one-screen window
-- [ ] `z` moves chat panel to top of application (same content, same scroll, just repositioned)
-- [ ] `z` again moves it back to bottom
-- [ ] Subtle background color difference to separate chat from main panes (Feynman-style)
-- [ ] Clean minimal message style — no heavy borders on messages
-- [ ] User messages plain, assistant messages slightly dimmed/indented
-
-## Hygg integration
-- [ ] Step 10: Wire rewritten cli-text-reader into Tentative left pane (in progress)
-- [ ] Reader mode: full width when no right panel active
-- [ ] Reader mode: 60/40 split when notes or chat active
-- [ ] Voice mode: fix wiring after ElevenLabs credits topped up
-- [ ] Floating hygg reader popup — open selected paper in a centered overlay (Ldr+Enter or dedicated key) without leaving the feed view; dismissible with Esc
-- [ ] Secondary split view — toggle a persistent hygg pane alongside the feed list (Ldr+v or similar); user can switch focus between feed and reader pane independently; reader pane retains scroll position when focus returns
-
-## Notes
-- [ ] Notes accessible from reader mode via Ldr+n
-- [ ] Notes panel opens in right pane alongside reader
-
-## Help screen
-- [ ] Design and implement full help screen
-- [ ] Show all keybindings with full Ctrl+T leader notation
-- [ ] Accessible via Ldr+?
-
-## Source discovery (agent-based)
-- [ ] Agent-assisted source discovery — ask model to find sources on a topic
-- [ ] Trending/popularity filter using existing signals + web search
-- [ ] Default sources remain, agents are supplementary
-
-## UI polish
-- [ ] Themes system — allow user to change color scheme
-- [ ] Settings screen: add theme selection
-- [ ] Overall UI improvements (ongoing)
-
-## Semantic Scholar
-- [ ] Fix rate limiting (currently hitting cap immediately)
-- [ ] Apply for proper API key
-- [ ] Re-enable enrichment once key obtained
-
-## Hygg rewrite (parallel agents)
-- [ ] CC plan executing on branch hygg-rewrite-codex (stages 6-9 complete)
-- [ ] Codex plan executing on same branch (stages 1-5 complete)
-- [ ] Compare both approaches when complete
-- [ ] Wire winning approach into Tentative (step 10)
-
-## README / open source
-- [ ] Write README for public release
-- [ ] Add hero screenshot/demo
-- [ ] Document installation and configuration
-- [ ] Document keybindings
-- [ ] Choose license (currently AGPL-3.0)

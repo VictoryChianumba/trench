@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{ChatMessage, Role};
-use crate::provider::ChatProvider;
+use crate::provider::{ChatProvider, ProviderResponse};
 
 pub struct ClaudeProvider {
     pub api_key: String,
@@ -29,17 +29,24 @@ struct ContentBlock {
 }
 
 #[derive(Deserialize)]
+struct Usage {
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+#[derive(Deserialize)]
 struct ClaudeResponse {
     content: Vec<ContentBlock>,
+    #[serde(default)]
+    usage: Option<Usage>,
 }
 
 impl ChatProvider for ClaudeProvider {
-    fn name(&self) -> &str {
-        "claude"
-    }
+    fn name(&self) -> &str { "claude" }
+    fn model(&self) -> &str { &self.model }
+    fn context_window(&self) -> u64 { 200_000 }
 
-    fn send(&self, messages: &[ChatMessage]) -> Result<String> {
-        // Collect system messages into a single system prompt; exclude from messages array.
+    fn send(&self, messages: &[ChatMessage]) -> Result<ProviderResponse> {
         let system_text: String = messages
             .iter()
             .filter(|m| matches!(m.role, Role::System))
@@ -83,17 +90,43 @@ impl ChatProvider for ClaudeProvider {
         let text = resp.text()?;
 
         if !status.is_success() {
-            return Err(anyhow!("Claude API error {status}: {text}"));
+            let friendly = friendly_error(status.as_u16(), &text);
+            return Err(anyhow!("{friendly}"));
         }
 
         let parsed: ClaudeResponse = serde_json::from_str(&text)
             .map_err(|e| anyhow!("Failed to parse Claude response: {e}\nBody: {text}"))?;
 
-        parsed
+        let content = parsed
             .content
             .into_iter()
             .next()
             .map(|b| b.text)
-            .ok_or_else(|| anyhow!("Claude response had no content blocks"))
+            .ok_or_else(|| anyhow!("Claude response had no content blocks"))?;
+
+        let (input_tokens, output_tokens) = parsed
+            .usage
+            .map(|u| (u.input_tokens, u.output_tokens))
+            .unwrap_or((0, 0));
+
+        Ok(ProviderResponse { content, input_tokens, output_tokens })
     }
+}
+
+fn friendly_error(status: u16, body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(body) {
+        if let Some(err_type) = v["error"]["type"].as_str() {
+            return match err_type {
+                "authentication_error" => "invalid API key — check settings".to_string(),
+                "rate_limit_error" => "rate limit exceeded — try again shortly".to_string(),
+                t if t.contains("quota") => "quota exceeded — check billing".to_string(),
+                _ => {
+                    let msg = v["error"]["message"].as_str().unwrap_or("unknown error");
+                    let short = if msg.len() > 80 { &msg[..80] } else { msg };
+                    format!("API error — {short}")
+                }
+            };
+        }
+    }
+    format!("API error {status}")
 }

@@ -49,11 +49,13 @@ mod text_objects_delimiters;
 mod text_objects_paragraphs;
 mod text_objects_quotes;
 mod toggle_highlight;
+mod settings;
 mod tutorial_display;
 mod tutorial_interactive;
 mod tutorial_interactive_completion;
 mod utils;
 mod visual_mode;
+mod voice_control;
 mod visual_mode_control;
 mod visual_mode_find;
 mod visual_mode_movement;
@@ -61,9 +63,21 @@ mod visual_mode_objects;
 mod word_navigation;
 mod yank;
 
+mod actions;
+mod api;
+mod highlight_spans;
+mod layout;
+mod render_lines;
+mod runtime;
+mod widget;
+mod widgets;
+
 // Re-export main structures and functions
+pub use actions::EditorAction;
 pub use commands::handle_command;
 pub use core::{Editor, EditorMode, EditorState};
+pub use runtime::run as run_ratatui;
+pub use widget::draw;
 
 // Tests
 #[cfg(test)]
