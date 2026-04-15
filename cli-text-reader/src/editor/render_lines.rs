@@ -5,6 +5,7 @@ use super::{
   highlight_spans::{self, StyleRange},
 };
 
+#[allow(dead_code)]
 pub struct RenderedLine {
   pub document_line_index: Option<usize>,
   pub spans: Vec<Span<'static>>,

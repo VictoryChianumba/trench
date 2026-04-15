@@ -44,8 +44,7 @@ pub fn load_config() -> AppConfig {
     config.tutorial_shown = parse_bool_env_var("TUTORIAL_SHOWN");
     config.elevenlabs_api_key =
       std::env::var("ELEVENLABS_API_KEY").unwrap_or_default();
-    config.voice_id =
-      std::env::var("VOICE_ID").unwrap_or_default();
+    config.voice_id = std::env::var("VOICE_ID").unwrap_or_default();
     config.playback_speed = std::env::var("PLAYBACK_SPEED")
       .ok()
       .and_then(|v| v.parse().ok())

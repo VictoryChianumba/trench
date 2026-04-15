@@ -148,11 +148,8 @@ impl Editor {
     let mut ranges: Vec<(usize, usize)> = line_highlights
       .iter()
       .filter_map(|h| {
-        let start = if h.start <= abs_line_start {
-          0
-        } else {
-          h.start - abs_line_start
-        };
+        let start =
+          if h.start <= abs_line_start { 0 } else { h.start - abs_line_start };
         let end = if h.end >= abs_line_end {
           content.len()
         } else {
@@ -203,7 +200,11 @@ impl Editor {
     }
 
     if is_line_mode {
-      return if content.is_empty() { vec![] } else { vec![(0, content.len())] };
+      return if content.is_empty() {
+        vec![]
+      } else {
+        vec![(0, content.len())]
+      };
     }
 
     // Character mode
@@ -212,12 +213,10 @@ impl Editor {
       let ec = sel_start.1.max(sel_end.1).min(content.len());
       (sc, ec)
     } else if doc_line_idx == min_line {
-      let col =
-        if sel_start.0 < sel_end.0 { sel_start.1 } else { sel_end.1 };
+      let col = if sel_start.0 < sel_end.0 { sel_start.1 } else { sel_end.1 };
       (col.min(content.len()), content.len())
     } else if doc_line_idx == max_line {
-      let col =
-        if sel_start.0 > sel_end.0 { sel_start.1 } else { sel_end.1 };
+      let col = if sel_start.0 > sel_end.0 { sel_start.1 } else { sel_end.1 };
       (0, col.min(content.len()))
     } else {
       (0, content.len())

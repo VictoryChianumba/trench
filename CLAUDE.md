@@ -9,6 +9,11 @@ Saves current progress with a commit message.
 Usage: /checkpoint "description of what was done"
 Command: git add -A && git commit -m "$1"
 
+### Nightly checkpoint reminder
+Around 10pm each day, Claude should ask the user: "Should we commit the current version to GitHub?"
+Before asking, draft a commit message summarising the session's changes and present it for review.
+Only commit after the user has read and approved the draft message.
+
 ```sh
 # Build and run (primary development workflow)
 cargo run --release -- test-data/pdf/pdfreference1.7old.pdf
@@ -195,3 +200,84 @@ Single `draw(frame, app)` entry point. Feed view: tab bar → search row → ite
 - [ ] Document installation and configuration
 - [ ] Document keybindings
 - [ ] Choose license (currently AGPL-3.0)
+
+## Philosophy — Beautiful Code & Software
+
+This project strives for beauty in both code and UI. Beauty is not measured in lines 
+of code — it comes from simplicity, clarity, and restraint.
+
+### What makes code beautiful
+
+**Minimality** — the best solution uses no more than it needs. If you can remove 
+something without breaking meaning, remove it. No wasted parts, no wasted motion.
+"I couldn't add anything, I couldn't take anything away." — Brian Kernighan
+
+**Simplicity over cleverness** — prefer the straightforward solution. Clever code 
+that nobody can read in six months is not beautiful. Code that reads like prose is.
+
+**Single responsibility** — every function, struct, and module does one thing well. 
+If you need to use "and" to describe what something does, split it.
+
+**Consistency** — the codebase should feel like one person wrote it. Naming, 
+structure, patterns, and style should be uniform throughout. You should not be able 
+to tell which part was written first.
+
+**Brevity** — short functions (ideally visible on one screen). Short modules. 
+Short names that are still descriptive. If a function only calls one other function, 
+it is getting in the way.
+
+**No repetition (DRY)** — if the same logic appears twice, it belongs in one place. 
+Duplication is the enemy of elegance.
+
+**Revelation** — elegant code shows you something about the problem. It makes the 
+solution feel inevitable, not accidental.
+
+**Self-documenting** — if code needs a comment to explain what it does, it should 
+be rewritten. Comments explain why, not what.
+
+**Security by default** — never trust input. Validate at boundaries. Fail loudly 
+and early. Security is not an afterthought — it is part of the design.
+
+### What makes UI beautiful
+
+**Restraint** — show only what is needed. Every element on screen must earn its 
+place. Removing is usually better than adding.
+
+**Consistency** — same patterns, same colors, same spacing throughout. The user 
+should never be surprised by the interface.
+
+**Shared visual language** — all panes follow the same framing rules:
+- No individual box borders on content widgets
+- One shared outer border with section titles in the divider: `─── Title ───`
+- Border color: `Color::DarkGray`
+- Floating overlays/popups keep their own borders
+- This rule applies to every pane, now and in the future
+
+**Spatial clarity** — the layout communicates structure. The user always knows 
+where they are and how to get somewhere else.
+
+**Typography matters** — monospace, consistent sizing, deliberate use of bold and 
+color. Color carries meaning — use it sparingly so it still means something.
+
+**Feynman principle** — if you cannot explain the design decision simply, the 
+design is probably wrong.
+
+### The test
+
+Before finishing any piece of work, ask:
+- Can I remove anything without losing meaning?
+- Does this feel inevitable, or accidental?
+- Would a new contributor understand this without being told?
+- Does every element earn its place?
+
+If the answer to any of these is no, keep refining.
+
+## Design Principles
+
+### Pane styling — always follow this rule
+All panes must use the shared outer border style:
+- No individual `Block::bordered()` on pane content widgets
+- One shared outer border enclosing related panes with `Color::DarkGray`
+- Section titles in the divider line format: `─── Title ───`
+- Floating overlays and popups may keep their own borders
+- Consistent across all panes: feed, details, notes, reader, chat, and any future panes

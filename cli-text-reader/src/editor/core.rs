@@ -139,10 +139,7 @@ impl Editor {
         if cfg.elevenlabs_api_key.is_empty() {
           None
         } else {
-          Some(PlaybackController::new(
-            cfg.elevenlabs_api_key,
-            cfg.voice_id,
-          ))
+          Some(PlaybackController::new(cfg.elevenlabs_api_key, cfg.voice_id))
         }
       },
       voice_status: PlaybackStatus::Idle,

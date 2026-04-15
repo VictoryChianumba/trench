@@ -10,7 +10,7 @@ pub(crate) mod ui_functions;
 /// Generic return type for popups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PopupReturn<T> {
-    KeepPopup,
-    Cancel,
-    Apply(T),
+  KeepPopup,
+  Cancel,
+  Apply(T),
 }

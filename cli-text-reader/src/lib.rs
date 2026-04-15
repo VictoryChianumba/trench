@@ -1,6 +1,5 @@
 mod bookmarks;
 mod config;
-pub mod voice;
 mod core_state;
 mod core_types;
 mod debug;
@@ -22,11 +21,12 @@ mod interactive_tutorial_utils;
 mod progress;
 mod tutorial;
 mod utils;
+pub mod voice;
 
 pub use editor::Editor;
 
 // Embeddable ratatui API
-pub use editor::{draw as draw_editor, run_ratatui, EditorAction};
+pub use editor::{EditorAction, draw as draw_editor, run_ratatui};
 
 pub fn run_cli_text_reader(
   lines: Vec<String>,

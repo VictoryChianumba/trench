@@ -1,132 +1,146 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{ChatMessage, Role};
 use crate::provider::{ChatProvider, ProviderResponse};
+use crate::{ChatMessage, Role};
 
 pub struct ClaudeProvider {
-    pub api_key: String,
-    pub model: String,
+  pub api_key: String,
+  pub model: String,
 }
 
 impl ClaudeProvider {
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            model: "claude-sonnet-4-20250514".to_string(),
-        }
+  pub fn new(api_key: impl Into<String>) -> Self {
+    Self {
+      api_key: api_key.into(),
+      model: "claude-sonnet-4-20250514".to_string(),
     }
+  }
 
-    pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self { api_key: api_key.into(), model: model.into() }
-    }
+  pub fn with_model(
+    api_key: impl Into<String>,
+    model: impl Into<String>,
+  ) -> Self {
+    Self { api_key: api_key.into(), model: model.into() }
+  }
 }
 
 #[derive(Deserialize)]
 struct ContentBlock {
-    text: String,
+  text: String,
 }
 
 #[derive(Deserialize)]
 struct Usage {
-    input_tokens: u64,
-    output_tokens: u64,
+  input_tokens: u64,
+  output_tokens: u64,
 }
 
 #[derive(Deserialize)]
 struct ClaudeResponse {
-    content: Vec<ContentBlock>,
-    #[serde(default)]
-    usage: Option<Usage>,
+  content: Vec<ContentBlock>,
+  #[serde(default)]
+  usage: Option<Usage>,
 }
 
 impl ChatProvider for ClaudeProvider {
-    fn name(&self) -> &str { "claude" }
-    fn model(&self) -> &str { &self.model }
-    fn context_window(&self) -> u64 { 200_000 }
+  fn name(&self) -> &str {
+    "claude"
+  }
+  fn model(&self) -> &str {
+    &self.model
+  }
+  fn context_window(&self) -> u64 {
+    200_000
+  }
 
-    fn send(&self, messages: &[ChatMessage]) -> Result<ProviderResponse> {
-        let system_text: String = messages
-            .iter()
-            .filter(|m| matches!(m.role, Role::System))
-            .map(|m| m.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+  fn send(&self, messages: &[ChatMessage]) -> Result<ProviderResponse> {
+    let system_text: String = messages
+      .iter()
+      .filter(|m| matches!(m.role, Role::System))
+      .map(|m| m.content.as_str())
+      .collect::<Vec<_>>()
+      .join("\n\n");
 
-        let api_messages: Vec<Value> = messages
-            .iter()
-            .filter(|m| !matches!(m.role, Role::System))
-            .map(|m| {
-                let role = match m.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => unreachable!(),
-                };
-                json!({ "role": role, "content": m.content })
-            })
-            .collect();
+    let api_messages: Vec<Value> = messages
+      .iter()
+      .filter(|m| !matches!(m.role, Role::System))
+      .map(|m| {
+        let role = match m.role {
+          Role::User => "user",
+          Role::Assistant => "assistant",
+          Role::System => unreachable!(),
+        };
+        json!({ "role": role, "content": m.content })
+      })
+      .collect();
 
-        let mut body = json!({
-            "model": self.model,
-            "max_tokens": 4096,
-            "messages": api_messages,
-        });
+    let mut body = json!({
+        "model": self.model,
+        "max_tokens": 4096,
+        "messages": api_messages,
+    });
 
-        if !system_text.is_empty() {
-            body["system"] = json!(system_text);
-        }
-
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()?;
-
-        let status = resp.status();
-        let text = resp.text()?;
-
-        if !status.is_success() {
-            let friendly = friendly_error(status.as_u16(), &text);
-            return Err(anyhow!("{friendly}"));
-        }
-
-        let parsed: ClaudeResponse = serde_json::from_str(&text)
-            .map_err(|e| anyhow!("Failed to parse Claude response: {e}\nBody: {text}"))?;
-
-        let content = parsed
-            .content
-            .into_iter()
-            .next()
-            .map(|b| b.text)
-            .ok_or_else(|| anyhow!("Claude response had no content blocks"))?;
-
-        let (input_tokens, output_tokens) = parsed
-            .usage
-            .map(|u| (u.input_tokens, u.output_tokens))
-            .unwrap_or((0, 0));
-
-        Ok(ProviderResponse { content, input_tokens, output_tokens })
+    if !system_text.is_empty() {
+      body["system"] = json!(system_text);
     }
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+      .post("https://api.anthropic.com/v1/messages")
+      .header("x-api-key", &self.api_key)
+      .header("anthropic-version", "2023-06-01")
+      .header("content-type", "application/json")
+      .json(&body)
+      .send()?;
+
+    let status = resp.status();
+    let text = resp.text()?;
+
+    if !status.is_success() {
+      let friendly = friendly_error(status.as_u16(), &text);
+      return Err(anyhow!("{friendly}"));
+    }
+
+    let parsed: ClaudeResponse = serde_json::from_str(&text).map_err(|e| {
+      anyhow!("Failed to parse Claude response: {e}\nBody: {text}")
+    })?;
+
+    let content = parsed
+      .content
+      .into_iter()
+      .next()
+      .map(|b| b.text)
+      .ok_or_else(|| anyhow!("Claude response had no content blocks"))?;
+
+    let (input_tokens, output_tokens) =
+      parsed.usage.map(|u| (u.input_tokens, u.output_tokens)).unwrap_or((0, 0));
+
+    Ok(ProviderResponse { content, input_tokens, output_tokens })
+  }
 }
 
 fn friendly_error(status: u16, body: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<Value>(body) {
-        if let Some(err_type) = v["error"]["type"].as_str() {
-            return match err_type {
-                "authentication_error" => "invalid API key — check settings".to_string(),
-                "rate_limit_error" => "rate limit exceeded — try again shortly".to_string(),
-                t if t.contains("quota") => "quota exceeded — check billing".to_string(),
-                _ => {
-                    let msg = v["error"]["message"].as_str().unwrap_or("unknown error");
-                    let short = if msg.len() > 80 { &msg[..80] } else { msg };
-                    format!("API error — {short}")
-                }
-            };
+  if let Ok(v) = serde_json::from_str::<Value>(body) {
+    if let Some(err_type) = v["error"]["type"].as_str() {
+      return match err_type {
+        "authentication_error" => {
+          "invalid API key — check settings".to_string()
         }
+        "rate_limit_error" => {
+          "rate limit exceeded — try again shortly".to_string()
+        }
+        t if t.contains("quota") => {
+          "quota exceeded — check billing".to_string()
+        }
+        _ => {
+          let msg = v["error"]["message"].as_str().unwrap_or("unknown error");
+          let short = if msg.len() > 80 { &msg[..80] } else { msg };
+          format!("API error — {short}")
+        }
+      };
     }
-    format!("API error {status}")
+  }
+  format!("API error {status}")
 }

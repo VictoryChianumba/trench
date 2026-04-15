@@ -280,32 +280,6 @@ impl Editor {
     Ok(())
   }
 
-  // Render line with search term highlighted
-  fn render_line_with_search_highlight(
-    &self,
-    stdout: &mut io::Stdout,
-    line: &str,
-    search_term: &str,
-  ) -> IoResult<()> {
-    let mut last_end = 0;
-    for (start, part) in line.match_indices(search_term) {
-      // Write text before match
-      write!(stdout, "{}", &line[last_end..start])?;
-      // Write match with highlight
-      execute!(
-        stdout,
-        SetBackgroundColor(Color::Yellow),
-        SetForegroundColor(Color::Black)
-      )?;
-      write!(stdout, "{part}")?;
-      execute!(stdout, ResetColor)?;
-      last_end = start + part.len();
-    }
-    // Write remaining text
-    write!(stdout, "{}", &line[last_end..])?;
-    Ok(())
-  }
-
   // Buffered version of draw_split_view
   pub(super) fn draw_split_view_buffered(
     &self,
@@ -577,29 +551,6 @@ impl Editor {
       }
     }
 
-    Ok(())
-  }
-
-  // Buffered version of render_line_with_search_highlight
-  fn render_line_with_search_highlight_buffered(
-    &self,
-    buffer: &mut Vec<u8>,
-    line: &str,
-    search_term: &str,
-  ) -> IoResult<()> {
-    let mut last_end = 0;
-    for (start, part) in line.match_indices(search_term) {
-      // Write text before match
-      write!(buffer, "{}", &line[last_end..start])?;
-      // Write match with highlight
-      buffer.queue(SetBackgroundColor(Color::Yellow))?;
-      buffer.queue(SetForegroundColor(Color::Black))?;
-      write!(buffer, "{part}")?;
-      buffer.queue(ResetColor)?;
-      last_end = start + part.len();
-    }
-    // Write remaining text
-    write!(buffer, "{}", &line[last_end..])?;
     Ok(())
   }
 
