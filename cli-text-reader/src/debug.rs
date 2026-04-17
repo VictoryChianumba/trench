@@ -11,7 +11,7 @@ pub fn init_debug_logging() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("DEBUG: HYGG_DEBUG is set");
     let mut debug_dir =
       dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    debug_dir.push(".hygg");
+    debug_dir.push(".hygg-reader");
     eprintln!("DEBUG: Creating debug dir: {debug_dir:?}");
     std::fs::create_dir_all(&debug_dir)?;
 

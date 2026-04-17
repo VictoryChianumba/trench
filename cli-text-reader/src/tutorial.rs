@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 pub fn get_tutorial_text() -> Vec<String> {
   vec![
-    "Welcome to hygg!".to_string(),
+    "Welcome to hygg-reader!".to_string(),
     "".to_string(),
     "Basic Navigation:".to_string(),
     "h or ← = move cursor left".to_string(),
@@ -131,7 +131,7 @@ pub fn get_tutorial_text() -> Vec<String> {
     "".to_string(),
     "Settings:".to_string(),
     "All display settings are automatically saved".to_string(),
-    "to ~/.config/hygg/.env and persist between sessions".to_string(),
+    "to ~/.config/hygg-reader/.env and persist between sessions".to_string(),
     "".to_string(),
     "Press any key to continue...".to_string(),
   ]

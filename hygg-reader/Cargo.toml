@@ -1,7 +1,7 @@
 [package]
-name = "hygg"
+name = "hygg-reader"
 description = "Simplifying the way you read"
-default-run = "hygg"
+default-run = "hygg-reader"
 
 version.workspace = true
 rust-version.workspace = true

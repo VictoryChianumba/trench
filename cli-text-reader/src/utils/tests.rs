@@ -1,7 +1,8 @@
 #[cfg(test)]
 use crate::utils::{
-  ensure_config_file_with_defaults, get_hygg_config_dir, get_hygg_config_file,
-  get_hygg_subdir_file, parse_bool_env_var, safe_mutex_lock,
+  ensure_config_file_with_defaults, get_hygg_reader_config_dir,
+  get_hygg_reader_config_file, get_hygg_reader_subdir_file, parse_bool_env_var,
+  safe_mutex_lock,
 };
 #[cfg(test)]
 use std::env;
@@ -88,21 +89,24 @@ fn test_ensure_config_file_with_defaults() {
 }
 
 #[test]
-fn test_hygg_config_functions_integration() {
+fn test_hygg_reader_config_functions_integration() {
   // These are integration tests that may create actual config directories
   // They should be safe since they use the standard config directory structure
 
   // Test basic config directory creation
-  let config_dir = get_hygg_config_dir();
+  let config_dir = get_hygg_reader_config_dir();
   assert!(config_dir.is_ok(), "Should be able to get config directory");
 
   if let Ok(dir) = config_dir {
     assert!(dir.exists(), "Config directory should exist after creation");
-    assert!(dir.ends_with("hygg"), "Directory should end with 'hygg'");
+    assert!(
+      dir.ends_with("hygg-reader"),
+      "Directory should end with 'hygg-reader'"
+    );
   }
 
   // Test config file path generation
-  let config_file = get_hygg_config_file("test.conf");
+  let config_file = get_hygg_reader_config_file("test.conf");
   assert!(config_file.is_ok(), "Should be able to generate config file path");
 
   if let Ok(file_path) = config_file {
@@ -113,7 +117,7 @@ fn test_hygg_config_functions_integration() {
   }
 
   // Test subdirectory file path generation
-  let subdir_file = get_hygg_subdir_file("testdir", "test.json");
+  let subdir_file = get_hygg_reader_subdir_file("testdir", "test.json");
   assert!(subdir_file.is_ok(), "Should be able to generate subdir file path");
 
   if let Ok(file_path) = subdir_file {

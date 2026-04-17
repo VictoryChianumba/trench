@@ -102,7 +102,7 @@ mod tests {
 
     // Create a temporary directory for testing
     let temp_dir = TempDir::new().unwrap();
-    let test_dir = temp_dir.path().join(".config/hygg/highlights");
+    let test_dir = temp_dir.path().join(".config/hygg-reader/highlights");
     fs::create_dir_all(&test_dir).unwrap();
 
     let mut data = HighlightData::new("test_doc_hash".to_string());
@@ -135,7 +135,7 @@ mod tests {
 
     // Create a temporary directory for testing
     let temp_dir = TempDir::new().unwrap();
-    let test_dir = temp_dir.path().join(".config/hygg/highlights");
+    let test_dir = temp_dir.path().join(".config/hygg-reader/highlights");
     fs::create_dir_all(&test_dir).unwrap();
 
     // Try to load non-existent highlights file

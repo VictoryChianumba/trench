@@ -16,7 +16,7 @@ Only commit after the user has read and approved the draft message.
 
 ```sh
 # Build and run (primary development workflow)
-cargo run --release -- test-data/pdf/pdfreference1.7old.pdf
+cargo run -p hygg-reader --release -- test-data/pdf/pdfreference1.7old.pdf
 
 # Build all crates
 cargo build --release
@@ -45,7 +45,7 @@ Rust edition: 2024, MSRV: 1.88. The `ci.sh` script uses the nightly toolchain fo
 ## Workspace Structure
 
 ```
-hygg/              → main binary: arg parsing, doc conversion → cli-text-reader
+hygg-reader/       → main reader binary: arg parsing, doc conversion → cli-text-reader
 cli-text-reader/   → the TUI reader (all editor logic lives here)
 cli-pdf-to-text/   → PDF → plain text conversion
 cli-epub-to-text/  → EPUB → plain text conversion
@@ -55,7 +55,7 @@ redirect-stderr/   → stderr redirection helper
 trench/            → separate binary: AI research feed aggregator TUI
 ```
 
-**hygg pipeline**: arg parsing → OCR (optional, via `ocrmypdf`) → format conversion (PDF/EPUB/pandoc) → `cli-justify::justify()` → `cli-text-reader::run_cli_text_reader()`.
+**hygg-reader pipeline**: arg parsing → OCR (optional, via `ocrmypdf`) → format conversion (PDF/EPUB/pandoc) → `cli-justify::justify()` → `cli-text-reader::run_cli_text_reader()`.
 
 ## Workspace-wide Clippy Allowances
 
@@ -76,11 +76,11 @@ This crate is the core. Everything is implemented as `impl Editor` blocks spread
 - Text is split into ≤4500-char chunks via `chunk_paragraphs()` in `src/voice/mod.rs`.
 - `VoicePlayingInfo` (shared via `Arc<Mutex>`) tracks which doc lines are playing and timing for word-highlight animation.
 - `sync_voice_status()` is called each tick in the display loop — this is the hook point for detecting playback completion.
-- TTS uses ElevenLabs API. Config (`ELEVENLABS_API_KEY`, `VOICE_ID`, `PLAYBACK_SPEED`) lives in `~/.config/hygg/.env`.
+- TTS uses ElevenLabs API. Config (`ELEVENLABS_API_KEY`, `VOICE_ID`, `PLAYBACK_SPEED`) lives in `~/.config/hygg-reader/.env`.
 
-**Config** (`src/config.rs`): loaded from `~/.config/hygg/.env` via `dotenvy`. Call `load_config()` at startup; `save_config()` persists changes.
+**Config** (`src/config.rs`): loaded from `~/.config/hygg-reader/.env` via `dotenvy`. Call `load_config()` at startup; `save_config()` persists changes.
 
-**Persistence**: Progress saved per-document using a hash of the document content (`src/progress.rs`). Bookmarks and highlights also keyed by document hash (`src/bookmarks.rs`, `src/highlights.rs`). All files live under `~/.config/hygg/`.
+**Persistence**: Progress saved per-document using a hash of the document content (`src/progress.rs`). Bookmarks and highlights also keyed by document hash (`src/bookmarks.rs`, `src/highlights.rs`). All files live under `~/.config/hygg-reader/`.
 
 **Buffers**: The editor supports multiple `BufferState` buffers (used for split-view command output). Buffer 0 is always the document. Active buffer accessed via `self.active_buffer` index.
 

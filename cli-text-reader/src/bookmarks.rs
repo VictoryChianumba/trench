@@ -1,4 +1,4 @@
-use crate::utils::get_hygg_subdir_file;
+use crate::utils::get_hygg_reader_subdir_file;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -12,7 +12,7 @@ pub struct BookmarkData {
 fn get_bookmarks_path(
   document_hash: u64,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-  get_hygg_subdir_file("bookmarks", &format!("{document_hash}.json"))
+  get_hygg_reader_subdir_file("bookmarks", &format!("{document_hash}.json"))
 }
 
 pub fn load_bookmarks(

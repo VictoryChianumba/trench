@@ -15,7 +15,7 @@ pub use storage::{
   create_session, delete_session, load_index, load_session, save_index,
   save_session,
 };
-pub use ui::{ChatAction, ChatUi, ChatUiState};
+pub use ui::{ChatAction, ChatSlashCommandSpec, ChatUi, ChatUiState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Role {

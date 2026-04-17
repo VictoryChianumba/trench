@@ -1,5 +1,6 @@
 use crate::utils::{
-  ensure_config_file_with_defaults, get_hygg_config_file, parse_bool_env_var,
+  ensure_config_file_with_defaults, get_hygg_reader_config_file,
+  parse_bool_env_var,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ pub struct AppConfig {
 }
 
 fn get_config_env_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-  get_hygg_config_file(".env")
+  get_hygg_reader_config_file(".env")
 }
 
 fn ensure_config_file() -> Result<(), Box<dyn std::error::Error>> {

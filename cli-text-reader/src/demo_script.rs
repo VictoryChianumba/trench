@@ -111,7 +111,7 @@ impl DemoScript {
     let actions = vec![
       // Welcome
       ShowHint(
-        "Welcome to hygg! Let's learn the basics.".to_string(),
+        "Welcome to hygg-reader! Let's learn the basics.".to_string(),
         Duration::from_millis(3000),
       ),
       Wait(Duration::from_millis(1000)),

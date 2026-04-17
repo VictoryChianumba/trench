@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub fn get_highlights_file_path(document_hash: &str) -> PathBuf {
   let mut config_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
   config_dir.push(".config");
-  config_dir.push("hygg");
+  config_dir.push("hygg-reader");
   config_dir.push("highlights");
 
   // Ensure the directory exists

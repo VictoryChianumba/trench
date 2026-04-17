@@ -38,54 +38,21 @@ pub enum ChatAction {
   SlashCommand(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSlashCommandSpec {
+  pub command: String,
+  pub completion: String,
+  pub description: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatInputMode {
   Insert,
   Normal,
 }
 
-#[derive(Clone, Copy)]
-struct SlashCommandSpec {
-  command: &'static str,
-  completion: &'static str,
-  description: &'static str,
-}
-
-const SLASH_COMMANDS: &[SlashCommandSpec] = &[
-  SlashCommandSpec {
-    command: "/discover",
-    completion: "/discover ",
-    description: "Find papers and sources for a topic",
-  },
-  SlashCommandSpec {
-    command: "/clear discoveries",
-    completion: "/clear discoveries",
-    description: "Clear the discovery feed",
-  },
-  SlashCommandSpec {
-    command: "/add",
-    completion: "/add ",
-    description: "Add an arXiv category permanently",
-  },
-  SlashCommandSpec {
-    command: "/add-feed",
-    completion: "/add-feed ",
-    description: "Add an RSS feed permanently",
-  },
-  SlashCommandSpec {
-    command: "/trending",
-    completion: "/trending ",
-    description: "Planned: find trending work for a topic",
-  },
-  SlashCommandSpec {
-    command: "/watch",
-    completion: "/watch ",
-    description: "Planned: watch a topic over time",
-  },
-];
-
-const CHAT_BG: Color = Color::Rgb(10, 14, 18);
-const CHAT_PANEL_BG: Color = Color::Rgb(15, 21, 27);
+const CHAT_BG: Color = Color::Black;
+const CHAT_PANEL_BG: Color = Color::Black;
 const CHAT_INPUT_BG: Color = Color::Rgb(22, 31, 40);
 const CHAT_ACCENT: Color = Color::Rgb(135, 206, 235);
 const CHAT_HEADER: Color = Color::Rgb(62, 126, 180);
@@ -93,6 +60,7 @@ const CHAT_TEXT: Color = Color::Rgb(218, 224, 230);
 const CHAT_MUTED: Color = Color::Rgb(105, 118, 130);
 const CHAT_BORDER: Color = Color::Rgb(48, 60, 72);
 const CHAT_SELECT_BG: Color = Color::Rgb(58, 74, 90);
+const CHAT_USER_BG: Color = Color::Rgb(33, 44, 56);
 const CHAT_SUCCESS: Color = Color::Rgb(132, 190, 145);
 const CHAT_WARN: Color = Color::Rgb(204, 180, 105);
 
@@ -120,12 +88,19 @@ pub struct ChatUi {
   pub input_mode: ChatInputMode,
   /// Selected row in the slash-command suggestion palette.
   pub slash_selected: usize,
+  /// Top visible row in the slash-command suggestion palette.
+  pub slash_scroll: usize,
+  pub slash_commands: Vec<ChatSlashCommandSpec>,
 }
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
 impl ChatUi {
-  pub fn new(registry: ProviderRegistry, default_provider: String) -> Self {
+  pub fn new(
+    registry: ProviderRegistry,
+    default_provider: String,
+    slash_commands: Vec<ChatSlashCommandSpec>,
+  ) -> Self {
     let index = load_index();
     let sessions = index.sessions;
     let mut session_list_state = ListState::default();
@@ -151,6 +126,8 @@ impl ChatUi {
       is_streaming: false,
       input_mode: ChatInputMode::Insert,
       slash_selected: 0,
+      slash_scroll: 0,
+      slash_commands,
     }
   }
 }
@@ -870,22 +847,23 @@ impl ChatUi {
     }
   }
 
-  fn slash_suggestions(&self) -> Vec<SlashCommandSpec> {
+  fn slash_suggestions(&self) -> Vec<ChatSlashCommandSpec> {
     let input = self.input.trim_start();
     if !input.starts_with('/') {
       return Vec::new();
     }
 
     let query = input.to_lowercase();
-    SLASH_COMMANDS
+    self
+      .slash_commands
       .iter()
-      .copied()
       .filter(|spec| {
         spec.command.starts_with(&query)
           || spec.completion.trim_end().starts_with(&query)
-          || query.starts_with(spec.command)
+          || query.starts_with(&spec.command)
           || spec.command.contains(query.trim_start_matches('/'))
       })
+      .cloned()
       .collect()
   }
 
@@ -893,9 +871,11 @@ impl ChatUi {
     let len = self.slash_suggestions().len();
     if len == 0 {
       self.slash_selected = 0;
+      self.slash_scroll = 0;
     } else if self.slash_selected >= len {
       self.slash_selected = len - 1;
     }
+    self.clamp_slash_scroll(len);
   }
 
   fn move_slash_selection(&mut self, delta: isize) -> bool {
@@ -906,7 +886,27 @@ impl ChatUi {
 
     let current = self.slash_selected.min(len - 1) as isize;
     self.slash_selected = (current + delta).clamp(0, len as isize - 1) as usize;
+    self.clamp_slash_scroll(len);
     true
+  }
+
+  fn clamp_slash_scroll(&mut self, len: usize) {
+    if len == 0 {
+      self.slash_scroll = 0;
+      return;
+    }
+
+    let viewport = len.min(6);
+    if self.slash_selected < self.slash_scroll {
+      self.slash_scroll = self.slash_selected;
+    } else if self.slash_selected >= self.slash_scroll + viewport {
+      self.slash_scroll = self.slash_selected + 1 - viewport;
+    }
+
+    let max_scroll = len.saturating_sub(viewport);
+    if self.slash_scroll > max_scroll {
+      self.slash_scroll = max_scroll;
+    }
   }
 
   fn complete_selected_slash_command(&mut self) -> bool {
@@ -916,7 +916,7 @@ impl ChatUi {
     else {
       return false;
     };
-    self.input = spec.completion.to_string();
+    self.input = spec.completion.clone();
     self.input_cursor = self.input.len();
     true
   }
@@ -941,21 +941,45 @@ impl ChatUi {
     }
 
     self.slash_selected = self.slash_selected.min(suggestions.len() - 1);
-
-    let height = (suggestions.len() as u16).min(6).min(messages_area.height);
+    self.clamp_slash_scroll(suggestions.len());
+    let height = (suggestions.len() as u16)
+      .min(6)
+      .saturating_add(2)
+      .min(messages_area.height);
+    let width = messages_area.width.min(64).max(28);
     let area = Rect {
       x: messages_area.x,
       y: messages_area.y + messages_area.height.saturating_sub(height),
-      width: messages_area.width,
+      width,
       height,
     };
+    let block = Block::default()
+      .borders(Borders::ALL)
+      .border_style(Style::default().fg(CHAT_BORDER).bg(CHAT_BG))
+      .title(Span::styled(
+        " commands ",
+        Style::default().fg(CHAT_HEADER).add_modifier(Modifier::BOLD),
+      ))
+      .style(Style::default().bg(CHAT_BG));
+    let inner = block.inner(area);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+      return;
+    }
+
+    let start = self.slash_scroll;
+    let end = (start + inner.height as usize).min(suggestions.len());
 
     let lines: Vec<Line> = suggestions
       .iter()
-      .take(height as usize)
+      .skip(start)
+      .take(end.saturating_sub(start))
       .enumerate()
       .map(|(i, spec)| {
-        let selected = i == self.slash_selected;
+        let selected = start + i == self.slash_selected;
         let style = if selected {
           Style::default()
             .bg(CHAT_SELECT_BG)
@@ -972,17 +996,21 @@ impl ChatUi {
         Line::from(vec![
           Span::styled(" ", style),
           Span::styled(
-            format!("{:<20}", spec.completion.trim_end()),
+            format!(
+              "{:<width$}",
+              spec.completion.trim_end(),
+              width = 20.min(inner.width.saturating_sub(2) as usize)
+            ),
             command_style,
           ),
-          Span::styled(spec.description.to_string(), style),
+          Span::styled(spec.description.clone(), style),
         ])
       })
       .collect();
 
     frame.render_widget(
       Paragraph::new(lines).style(Style::default().bg(CHAT_BG)),
-      area,
+      inner,
     );
   }
 
@@ -1113,7 +1141,7 @@ impl ChatUi {
         Role::System => continue,
 
         Role::User => {
-          let user_bg = Style::default().fg(CHAT_TEXT).bg(CHAT_SELECT_BG);
+          let user_bg = Style::default().fg(CHAT_TEXT).bg(CHAT_USER_BG);
           let content = if msg.content.is_empty() {
             " ".to_string()
           } else {

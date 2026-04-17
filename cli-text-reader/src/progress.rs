@@ -1,4 +1,4 @@
-use crate::utils::get_hygg_config_file;
+use crate::utils::get_hygg_reader_config_file;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -42,7 +42,7 @@ pub fn generate_hash<T: Hash>(t: &T) -> u64 {
 }
 
 fn get_progress_file_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-  get_hygg_config_file(".progress.jsonl")
+  get_hygg_reader_config_file(".progress.jsonl")
 }
 
 #[allow(dead_code)]

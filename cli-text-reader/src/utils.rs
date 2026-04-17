@@ -1,9 +1,10 @@
-// Common utility functions for the Hygg text reader
+// Common utility functions for the hygg-reader text reader
 use dirs::config_dir;
 use std::path::PathBuf;
 
-/// Get the base Hygg configuration directory, creating it if it doesn't exist
-pub fn get_hygg_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Get the base hygg-reader configuration directory, creating it if it doesn't exist
+pub fn get_hygg_reader_config_dir()
+-> Result<PathBuf, Box<dyn std::error::Error>> {
   let config_base = config_dir().ok_or("Unable to find config directory")?;
 
   // Log the config directory path for debugging
@@ -13,12 +14,12 @@ pub fn get_hygg_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
   );
 
   let mut config_path = config_base;
-  config_path.push("hygg");
+  config_path.push("hygg-reader");
 
   // Log the full path and attempt to create it
   crate::debug::debug_log(
     "config",
-    &format!("Creating hygg config directory: {config_path:?}"),
+    &format!("Creating hygg-reader config directory: {config_path:?}"),
   );
 
   match std::fs::create_dir_all(&config_path) {
@@ -40,21 +41,21 @@ pub fn get_hygg_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
   Ok(config_path)
 }
 
-/// Get a file path within the Hygg config directory
-pub fn get_hygg_config_file(
+/// Get a file path within the hygg-reader config directory
+pub fn get_hygg_reader_config_file(
   filename: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-  let mut path = get_hygg_config_dir()?;
+  let mut path = get_hygg_reader_config_dir()?;
   path.push(filename);
   Ok(path)
 }
 
-/// Get a file path within a subdirectory of the Hygg config directory
-pub fn get_hygg_subdir_file(
+/// Get a file path within a subdirectory of the hygg-reader config directory
+pub fn get_hygg_reader_subdir_file(
   subdir: &str,
   filename: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-  let mut path = get_hygg_config_dir()?;
+  let mut path = get_hygg_reader_config_dir()?;
   path.push(subdir);
   std::fs::create_dir_all(&path)?;
   path.push(filename);

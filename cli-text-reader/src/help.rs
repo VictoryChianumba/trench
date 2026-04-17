@@ -1,7 +1,7 @@
 // Help text showing all available commands
 pub fn get_help_text() -> Vec<String> {
   vec![
-    "hygg - Document Reader with Vim-like Navigation".to_string(),
+    "hygg-reader - Document Reader with Vim-like Navigation".to_string(),
     "".to_string(),
     "NAVIGATION COMMANDS".to_string(),
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
@@ -157,7 +157,8 @@ pub fn get_help_text() -> Vec<String> {
     "".to_string(),
     "SETTINGS".to_string(),
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-    "  All settings are automatically saved to ~/.config/hygg/.env".to_string(),
+    "  All settings are automatically saved to ~/.config/hygg-reader/.env"
+      .to_string(),
     "  Bookmarks and highlights are saved per document.".to_string(),
     "".to_string(),
     "Press ':q' to close this help.".to_string(),
