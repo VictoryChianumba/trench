@@ -40,8 +40,16 @@ fn fetch_abstracts(items: &mut Vec<FeedItem>) {
     ids.len()
   );
 
-  let body = match reqwest::blocking::get(&url).and_then(|r| r.text()) {
-    Ok(b) => b,
+  let body = match crate::http::client().get(&url).send().and_then(|r| {
+    if r.status().is_success() { Ok(r) } else { Err(r.error_for_status().unwrap_err()) }
+  }) {
+    Ok(r) => match crate::http::read_body(r) {
+      Ok(b) => b,
+      Err(e) => {
+        log::warn!("huggingface: abstract batch fetch failed — {e}");
+        return;
+      }
+    },
     Err(e) => {
       log::warn!("huggingface: abstract batch fetch failed — {e}");
       return;
@@ -156,12 +164,14 @@ fn abstract_truncate(s: &str, max: usize) -> String {
 // ---------------------------------------------------------------------------
 
 fn get_text(url: &str) -> Result<String, String> {
-  let resp =
-    reqwest::blocking::get(url).map_err(|e| format!("HTTP error: {e}"))?;
+  let resp = crate::http::client()
+    .get(url)
+    .send()
+    .map_err(|e| format!("HTTP error: {e}"))?;
   if !resp.status().is_success() {
     return Err(format!("HTTP {}", resp.status()));
   }
-  resp.text().map_err(|e| format!("Body read error: {e}"))
+  crate::http::read_body(resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -435,13 +445,11 @@ const CACHE_TTL_DAYS: i32 = 7;
 /// Returns `None` on any failure or when the field is absent / empty.
 pub fn fetch_paper_repo(arxiv_id: &str) -> Option<String> {
   let url = format!("https://huggingface.co/api/papers/{}", arxiv_id);
-  let client = reqwest::blocking::Client::new();
-  let resp =
-    client.get(&url).timeout(std::time::Duration::from_secs(5)).send().ok()?;
+  let resp = crate::http::client().get(&url).send().ok()?;
   if !resp.status().is_success() {
     return None;
   }
-  let body = resp.text().ok()?;
+  let body = crate::http::read_body(resp).ok()?;
   log::debug!("hf api response for {}: {}", arxiv_id, &body);
   let json: serde_json::Value = serde_json::from_str(&body).ok()?;
   json
@@ -607,8 +615,10 @@ fn save_hf_cache(cache: &HashMap<String, HfRepoCacheEntry>) {
     let _ = fs::create_dir_all(parent);
   }
   if let Ok(json) = serde_json::to_vec_pretty(cache) {
-    if let Err(e) = fs::write(&path, json) {
+    if let Err(e) = fs::write(&path, &json) {
       log::warn!("hf repo cache: save failed — {e}");
+    } else {
+      crate::store::set_private(&path);
     }
   }
 }

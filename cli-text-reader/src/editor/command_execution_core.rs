@@ -68,13 +68,13 @@ impl Editor {
       Err(e) => {
         let error_lines = vec![
           format!("$ {}", cmd),
-          format!("Security Error: {}", e),
-          "Only whitelisted commands are allowed.".to_string(),
-          "File viewing: cat, less, more, head, tail, file, stat, wc".to_string(),
-          "Navigation: ls, pwd, find, locate, which, whereis".to_string(),
-          "Text processing: grep, awk, sed, sort, uniq, cut, tr".to_string(),
-          "System info: date, uptime, whoami, id, uname, hostname, df, free, ps".to_string(),
-          "Use :help for more information about available commands.".to_string(),
+          format!("Error: {}", e),
+          "Allowed commands:".to_string(),
+          "  View files:  cat less more head tail file stat wc nl".to_string(),
+          "  Navigate:    ls pwd find locate which whereis".to_string(),
+          "  Text:        grep awk sed sort uniq cut tr fmt fold".to_string(),
+          "  System:      date uptime whoami id uname hostname df free ps".to_string(),
+          "  Paths:       basename dirname realpath readlink".to_string(),
         ];
         self.create_horizontal_split(cmd, error_lines);
         return Ok(());

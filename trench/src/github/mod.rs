@@ -98,8 +98,7 @@ fn get_json<T: for<'de> Deserialize<'de>>(
   url: &str,
   token: &str,
 ) -> Result<T, String> {
-  let client = reqwest::blocking::Client::new();
-  let mut req = client
+  let mut req = crate::http::client()
     .get(url)
     .header("User-Agent", "trench/0.1")
     .header("Accept", "application/vnd.github+json")
@@ -115,7 +114,8 @@ fn get_json<T: for<'de> Deserialize<'de>>(
     return Err(format!("GitHub API: HTTP {}", resp.status()));
   }
 
-  resp.json::<T>().map_err(|e| format!("JSON parse error: {e}"))
+  let body = crate::http::read_body(resp)?;
+  serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {e}"))
 }
 
 // ── Serde types ──────────────────────────────────────────────────────────────
