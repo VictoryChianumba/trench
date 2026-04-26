@@ -8,6 +8,16 @@ use std::path::PathBuf;
 
 use crate::models::WorkflowState;
 
+/// Restrict a file to owner-read/write only (0o600). Best-effort on Unix.
+pub(crate) fn set_private(path: &PathBuf) {
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+  }
+  let _ = path; // suppress unused warning on non-Unix
+}
+
 fn state_path() -> Option<PathBuf> {
   let mut p = dirs_home()?;
   p.push(".config");
@@ -48,5 +58,6 @@ pub fn save(state: &HashMap<String, WorkflowState>) {
 
   if let Ok(json) = serde_json::to_vec_pretty(state) {
     let _ = fs::write(&path, json);
+    set_private(&path);
   }
 }

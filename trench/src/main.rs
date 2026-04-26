@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod discovery;
 mod github;
+mod http;
 mod ingestion;
 mod keys;
 mod models;

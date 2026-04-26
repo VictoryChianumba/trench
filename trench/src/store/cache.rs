@@ -37,5 +37,6 @@ pub fn save(items: &[FeedItem]) {
 
   if let Ok(json) = serde_json::to_vec_pretty(items) {
     let _ = fs::write(&path, json);
+    crate::store::set_private(&path);
   }
 }

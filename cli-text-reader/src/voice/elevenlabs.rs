@@ -4,8 +4,8 @@ use std::thread;
 use super::stream_buffer::{StreamBuffer, StreamWriter};
 
 pub struct ElevenLabsService {
-  pub api_key: String,
-  pub voice_id: String,
+  api_key: String,
+  voice_id: String,
 }
 
 impl ElevenLabsService {

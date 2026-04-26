@@ -50,8 +50,10 @@ pub fn save(cache: &HashMap<String, EnrichmentEntry>) {
     let _ = fs::create_dir_all(parent);
   }
   if let Ok(json) = serde_json::to_vec_pretty(cache) {
-    if let Err(e) = fs::write(&path, json) {
+    if let Err(e) = fs::write(&path, &json) {
       log::warn!("enrichment_cache: failed to save to {path:?} — {e}");
+    } else {
+      crate::store::set_private(&path);
     }
   }
 }

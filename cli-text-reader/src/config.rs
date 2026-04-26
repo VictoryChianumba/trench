@@ -95,6 +95,11 @@ pub fn save_config(
     "ENABLE_TUTORIAL={enable_tutorial}\nENABLE_LINE_HIGHLIGHTER={enable_line_highlighter}\nSHOW_CURSOR={show_cursor}\nSHOW_PROGRESS={show_progress}\nTUTORIAL_SHOWN={tutorial_shown}\nELEVENLABS_API_KEY={elevenlabs_api_key}\nVOICE_ID={voice_id}\nPLAYBACK_SPEED={playback_speed:.1}\n"
   );
 
-  fs::write(config_path, content)?;
+  fs::write(&config_path, content)?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
+  }
   Ok(())
 }

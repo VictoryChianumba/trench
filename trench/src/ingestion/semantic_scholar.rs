@@ -18,7 +18,7 @@ pub fn enrich(
   cache: &mut HashMap<String, EnrichmentEntry>,
   api_key: Option<&str>,
 ) {
-  let client = reqwest::blocking::Client::new();
+  let client = crate::http::client();
   let mut enriched: usize = 0;
   let mut skipped: usize = 0;
   let mut request_count: usize = 0;
@@ -129,7 +129,7 @@ fn fetch_entry(
     }
   };
 
-  let body = match resp.text() {
+  let body = match crate::http::read_body(resp) {
     Ok(b) => b,
     Err(e) => {
       log::warn!(

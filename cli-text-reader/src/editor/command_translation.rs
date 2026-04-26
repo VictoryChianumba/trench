@@ -73,10 +73,11 @@ fn translate_ls(parsed: &ParsedCommand) -> String {
     }
   }
 
-  // Add path arguments
   if !parsed.args.is_empty() {
+    let escaped: Vec<String> =
+      parsed.args.iter().map(|a| format!("\"{}\"", ps_escape(a))).collect();
     ps_cmd.push_str(" -Path ");
-    ps_cmd.push_str(&parsed.args.join(", "));
+    ps_cmd.push_str(&escaped.join(", "));
   }
 
   if show_hidden {
@@ -94,13 +95,21 @@ fn translate_ls(parsed: &ParsedCommand) -> String {
   ps_cmd
 }
 
+/// Escape a string for use inside a PowerShell double-quoted string.
+/// `"` → `""`, `$` → `` `$ ``.
+fn ps_escape(s: &str) -> String {
+  s.replace('"', "\"\"").replace('$', "`$")
+}
+
 fn translate_cat(parsed: &ParsedCommand) -> String {
   let mut ps_cmd = String::from("Get-Content");
 
-  // Add file arguments
+  // Add file arguments (quoted and escaped)
   if !parsed.args.is_empty() {
+    let escaped: Vec<String> =
+      parsed.args.iter().map(|a| format!("\"{}\"", ps_escape(a))).collect();
     ps_cmd.push(' ');
-    ps_cmd.push_str(&parsed.args.join(" "));
+    ps_cmd.push_str(&escaped.join(" "));
   }
 
   // Handle -n flag (number lines)
@@ -118,8 +127,8 @@ fn translate_grep(parsed: &ParsedCommand) -> String {
     return "Select-String".to_string();
   }
 
-  let pattern = &parsed.args[0];
-  let file = &parsed.args[1];
+  let pattern = ps_escape(&parsed.args[0]);
+  let file = ps_escape(&parsed.args[1]);
 
   let mut ps_cmd =
     format!("Select-String -Pattern \"{pattern}\" -Path \"{file}\"");
@@ -146,10 +155,8 @@ fn translate_grep(parsed: &ParsedCommand) -> String {
 fn translate_head(parsed: &ParsedCommand) -> String {
   let mut ps_cmd = String::from("Get-Content");
 
-  // Add file arguments
   if !parsed.args.is_empty() {
-    ps_cmd.push(' ');
-    ps_cmd.push_str(&parsed.args[0]);
+    ps_cmd.push_str(&format!(" \"{}\"", ps_escape(&parsed.args[0])));
   }
 
   // Default to 10 lines
@@ -177,10 +184,8 @@ fn translate_head(parsed: &ParsedCommand) -> String {
 fn translate_tail(parsed: &ParsedCommand) -> String {
   let mut ps_cmd = String::from("Get-Content");
 
-  // Add file arguments
   if !parsed.args.is_empty() {
-    ps_cmd.push(' ');
-    ps_cmd.push_str(&parsed.args[0]);
+    ps_cmd.push_str(&format!(" \"{}\"", ps_escape(&parsed.args[0])));
   }
 
   // Default to 10 lines
@@ -221,11 +226,11 @@ mod tests {
     );
     assert_eq!(
       translate_command_for_windows("ls -l /tmp"),
-      "Get-ChildItem -Path /tmp | Format-Table Mode, LastWriteTime, Length, Name"
+      "Get-ChildItem -Path \"/tmp\" | Format-Table Mode, LastWriteTime, Length, Name"
     );
     assert_eq!(
       translate_command_for_windows("ls /tmp"),
-      "Get-ChildItem -Path /tmp | Select-Object -ExpandProperty Name"
+      "Get-ChildItem -Path \"/tmp\" | Select-Object -ExpandProperty Name"
     );
     assert_eq!(
       translate_command_for_windows("ls -a"),
@@ -237,11 +242,11 @@ mod tests {
   fn test_cat_translation() {
     assert_eq!(
       translate_command_for_windows("cat file.txt"),
-      "Get-Content file.txt"
+      "Get-Content \"file.txt\""
     );
     assert_eq!(
       translate_command_for_windows("cat -n file.txt"),
-      "Get-Content file.txt | Select-Object @{Name='LineNumber';Expression={$_.ReadCount}}, @{Name='Line';Expression={$_}}"
+      "Get-Content \"file.txt\" | Select-Object @{Name='LineNumber';Expression={$_.ReadCount}}, @{Name='Line';Expression={$_}}"
     );
   }
 
@@ -259,5 +264,22 @@ mod tests {
       translate_command_for_windows("grep -n pattern file.txt"),
       "Select-String -Pattern \"pattern\" -Path \"file.txt\" | Format-Table LineNumber, Line"
     );
+  }
+
+  #[test]
+  fn test_ps_escape() {
+    assert_eq!(ps_escape(r#"he said "hi""#), r#"he said ""hi"""#);
+    assert_eq!(ps_escape("$HOME"), "`$HOME");
+    assert_eq!(ps_escape(r#"foo"bar$baz"#), r#"foo""bar`$baz"#);
+  }
+
+  #[test]
+  fn test_grep_injection_resistance() {
+    // A pattern containing `"` must not break out of the PS string
+    let result = translate_command_for_windows(r#"grep foo"bar file.txt"#);
+    assert!(result.contains(r#"foo""bar"#), "double-quote not escaped: {result}");
+    // A pattern containing `$` must not be expanded by PS
+    let result = translate_command_for_windows("grep $HOME file.txt");
+    assert!(result.contains("`$HOME"), "dollar not escaped: {result}");
   }
 }

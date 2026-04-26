@@ -14,7 +14,7 @@ pub fn fetch(
 ) -> Result<Vec<FeedItem>, String> {
   log::info!("rss {source_name}: fetching {feed_url}");
 
-  let resp = reqwest::blocking::get(feed_url).map_err(|e| {
+  let resp = crate::http::client().get(feed_url).send().map_err(|e| {
     let msg = format!("{source_name}: HTTP request failed: {e}");
     log::error!("{msg}");
     msg
@@ -27,8 +27,8 @@ pub fn fetch(
     return Err(msg);
   }
 
-  let body = resp.text().map_err(|e| {
-    let msg = format!("{source_name}: Failed to read response: {e}");
+  let body = crate::http::read_body(resp).map_err(|e| {
+    let msg = format!("{source_name}: {e}");
     log::error!("{msg}");
     msg
   })?;
