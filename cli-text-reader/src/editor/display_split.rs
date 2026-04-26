@@ -5,7 +5,7 @@ use crossterm::{
 };
 use std::io::{self, Result as IoResult, Write};
 
-use super::core::{Editor, ViewMode};
+use super::core::Editor;
 use super::highlighting_persistent::HighlightType;
 
 impl Editor {

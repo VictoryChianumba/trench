@@ -81,7 +81,7 @@ pub fn redirect_stderr() -> std::io::Result<()> {
 }
 
 pub fn restore_stderr() -> std::io::Result<()> {
-  use std::fs::File;
+  
   use std::io::{self};
 
   #[cfg(target_os = "windows")]
@@ -101,7 +101,7 @@ pub fn restore_stderr() -> std::io::Result<()> {
   #[cfg(not(target_os = "windows"))]
   {
     use libc;
-    use std::os::unix::io::AsRawFd;
+    
 
     unsafe {
       if libc::dup2(UNIX_STDERR_HANDLE, libc::STDERR_FILENO) == -1 {
@@ -185,7 +185,7 @@ pub fn redirect_stdout() -> std::io::Result<()> {
 }
 
 pub fn restore_stdout() -> std::io::Result<()> {
-  use std::fs::File;
+  
   use std::io::{self};
 
   #[cfg(target_os = "windows")]

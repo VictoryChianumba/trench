@@ -1,11 +1,11 @@
 use crossterm::{
   cursor::{Hide, Show},
   execute,
-  terminal::{self, Clear, ClearType},
+  terminal::{self},
 };
-use std::io::{self, IsTerminal, Result as IoResult};
+use std::io::{self, IsTerminal};
 
-use super::core::{Editor, EditorMode, ViewMode};
+use super::core::Editor;
 use crate::bookmarks::load_bookmarks;
 use crate::config::load_config;
 use crate::highlights::load_highlights;

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]

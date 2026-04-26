@@ -1,8 +1,5 @@
 use hygg_shared::normalize_file_path;
-use std::{
-  env,
-  io::{BufWriter, Cursor},
-};
+use std::io::{BufWriter, Cursor};
 
 pub fn pdf_to_text(
   pdf_path: &str,
@@ -22,9 +19,9 @@ pub fn pdf_to_text(
     extern crate libc;
 
     use std::fs::File;
-    use std::io::{self, Write};
+    use std::io::{self};
     use std::os::fd::AsRawFd;
-    use std::os::unix::io::FromRawFd;
+    
 
     let stdout = io::stdout();
     original_fd = stdout.as_raw_fd();
@@ -60,10 +57,10 @@ pub fn pdf_to_text(
   {
     extern crate libc;
 
-    use std::fs::File;
-    use std::io::{self, Write};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::io::FromRawFd;
+    
+    
+    
+    
 
     unsafe {
       libc::dup2(duplicate_fd, original_fd);

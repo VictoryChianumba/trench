@@ -19,14 +19,20 @@ pub struct FilterState {
   pub workflow_states: HashSet<WorkflowState>,
 }
 
-impl FilterState {
-  pub fn new() -> Self {
+impl Default for FilterState {
+  fn default() -> Self {
     Self {
       sources: HashSet::new(),
       signals: HashSet::new(),
       content_types: HashSet::new(),
       workflow_states: HashSet::new(),
     }
+  }
+}
+
+impl FilterState {
+  pub fn new() -> Self {
+    Self::default()
   }
 
   pub fn is_empty(&self) -> bool {
@@ -1002,7 +1008,7 @@ impl App {
           for mut item in new_items {
             // Apply any persisted workflow state.
             if let Some(state) = self.persisted_states.get(&item.url) {
-              item.workflow_state = state.clone();
+              item.workflow_state = *state;
             }
 
             // URL dedup: overwrite cached item with freshly fetched data.
@@ -1024,7 +1030,7 @@ impl App {
               if let Some(pos) = pos {
                 if item.source_platform == SourcePlatform::ArXiv {
                   // Incoming is the canonical arXiv entry — replace HF stub.
-                  let ws = self.items[pos].workflow_state.clone();
+                  let ws = self.items[pos].workflow_state;
                   self.items[pos] = item;
                   self.items[pos].workflow_state = ws;
                 }
@@ -1113,7 +1119,7 @@ impl App {
   fn merge_discovery_items(&mut self, items: Vec<FeedItem>) {
     for mut item in items {
       if let Some(state) = self.persisted_states.get(&item.url) {
-        item.workflow_state = state.clone();
+        item.workflow_state = *state;
       }
 
       if let Some(existing) =
@@ -1130,7 +1136,7 @@ impl App {
         });
         if let Some(pos) = pos {
           if item.source_platform == SourcePlatform::ArXiv {
-            let ws = self.discovery_items[pos].workflow_state.clone();
+            let ws = self.discovery_items[pos].workflow_state;
             self.discovery_items[pos] = item;
             self.discovery_items[pos].workflow_state = ws;
           }
@@ -1301,7 +1307,7 @@ impl App {
       if let Some(item) =
         self.items_for_tab_mut().iter_mut().find(|i| i.url == url)
       {
-        item.workflow_state = state.clone();
+        item.workflow_state = state;
       }
       self.persisted_states.insert(url, state);
       crate::store::save(&self.persisted_states);

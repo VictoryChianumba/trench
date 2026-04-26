@@ -1,5 +1,5 @@
 use super::core::Editor;
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers};
 
 impl Editor {
   // Handle basic cursor movement keys (hjkl, arrows)

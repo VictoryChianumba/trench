@@ -1,8 +1,6 @@
-use crossterm::terminal;
 use std::io;
 
 use super::core::{Editor, ViewMode};
-use crate::config::{AppConfig, save_config};
 
 impl Editor {
   pub fn execute_command(

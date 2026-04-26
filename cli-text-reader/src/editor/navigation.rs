@@ -3,6 +3,3 @@
 // imports navigation functions
 
 // Re-export all navigation functions from their specialized modules
-pub use super::char_navigation::*;
-pub use super::line_navigation::*;
-pub use super::word_navigation::*;

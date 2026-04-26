@@ -74,8 +74,7 @@ mod widgets;
 
 // Re-export main structures and functions
 pub use actions::EditorAction;
-pub use commands::handle_command;
-pub use core::{Editor, EditorMode, EditorState};
+pub use core::{Editor, EditorMode};
 pub use runtime::run as run_ratatui;
 pub use widget::draw;
 

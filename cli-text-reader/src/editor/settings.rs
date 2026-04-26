@@ -3,7 +3,6 @@ use crossterm::{
   cursor::MoveTo,
   style::{Color, Print, ResetColor, SetForegroundColor},
 };
-use std::io::Write;
 
 use super::core::Editor;
 use crate::config::{AppConfig, load_config, save_config};

@@ -1,11 +1,10 @@
 use crossterm::{
   QueueableCommand, execute,
-  style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor},
-  terminal::{Clear, ClearType},
+  style::SetBackgroundColor,
 };
 use std::io::{self, Result as IoResult, Write};
 
-use super::core::{Editor, ViewMode};
+use super::core::Editor;
 
 impl Editor {
   // Draw content with proper highlighting

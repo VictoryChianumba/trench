@@ -1,8 +1,8 @@
 use super::core::{Editor, EditorMode, ViewMode};
 use crate::demo_registry::{get_demo_by_id, get_demo_content_by_id};
-use crate::demo_script::{DemoAction, DemoScript};
+use crate::demo_script::DemoAction;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 impl Editor {
   // Initialize demo mode with specified demo ID

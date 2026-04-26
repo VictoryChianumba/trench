@@ -1,4 +1,4 @@
-use super::core::{Editor, ViewMode};
+use super::core::Editor;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 impl Editor {

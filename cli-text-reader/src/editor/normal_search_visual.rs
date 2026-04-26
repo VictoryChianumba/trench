@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event as CEvent, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event as CEvent, KeyCode};
 
 use super::core::{Editor, EditorMode};
 

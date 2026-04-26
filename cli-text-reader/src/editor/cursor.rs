@@ -3,7 +3,7 @@ use crossterm::{
   cursor::{Hide, MoveTo, SetCursorStyle, Show},
   execute,
 };
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 
 use super::core::{Editor, EditorMode, ViewMode};
 

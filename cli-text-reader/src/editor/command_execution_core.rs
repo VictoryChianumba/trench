@@ -1,4 +1,4 @@
-use super::core::{Editor, ViewMode};
+use super::core::Editor;
 use crate::editor::command_execution_security::{
   execute_secure_command_with_timeout, parse_secure_command,
 };

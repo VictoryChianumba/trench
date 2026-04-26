@@ -4,7 +4,7 @@ use crossterm::{
   cursor::MoveTo,
   execute,
   style::{
-    Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor,
+    Color, Print, ResetColor, SetBackgroundColor,
     SetForegroundColor,
   },
 };

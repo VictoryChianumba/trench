@@ -1,10 +1,9 @@
 use crossterm::{
   cursor::Hide,
   event::{self, Event as CEvent},
-  execute,
   terminal::{self, Clear, ClearType},
 };
-use std::io::{self, IsTerminal, Result as IoResult, Write};
+use std::io::{self, IsTerminal, Write};
 
 use super::core::{Editor, EditorMode, ViewMode};
 use crate::progress::save_progress_with_viewport;
