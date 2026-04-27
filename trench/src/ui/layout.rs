@@ -14,7 +14,6 @@ use crate::app::{
   App, AppView, DiscoverResult, FeedTab, PaneId, SourcesDetectState,
 };
 use crate::models::{ContentType, SignalLevel, SourcePlatform, WorkflowState};
-use crate::theme;
 
 pub const RIGHT_COL_WIDTH: u16 = 36;
 
@@ -88,7 +87,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
       .split(area);
 
     let t = std::time::Instant::now();
-    draw_title_bar(frame, rows[0]);
+    draw_title_bar(frame, app, rows[0]);
     log::debug!("draw_title_bar: {}ms", t.elapsed().as_millis());
 
     let t = std::time::Instant::now();
@@ -124,7 +123,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
       .split(area);
 
     let t = std::time::Instant::now();
-    draw_title_bar(frame, rows[0]);
+    draw_title_bar(frame, app, rows[0]);
     log::debug!("draw_title_bar: {}ms", t.elapsed().as_millis());
 
     let t = std::time::Instant::now();
@@ -162,8 +161,8 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     draw_reader_popup(frame, app, area);
   }
 
-  // A2 State 3 — bottom pane always visible when dual-reader active.
-  if app.reader_dual_active {
+  // A2 State 3 — bottom pane visible only when summoned (Ldr+v).
+  if app.reader_dual_active && app.reader_bottom_open {
     draw_reader_bottom_pane(frame, app, area);
   }
 }
@@ -174,9 +173,10 @@ fn title_bar_height(width: u16) -> u16 {
   if width >= WIDE_TITLE_MIN_WIDTH { 6 } else { 2 }
 }
 
-fn draw_title_bar(frame: &mut Frame, area: Rect) {
+fn draw_title_bar(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   if area.width < WIDE_TITLE_MIN_WIDTH {
-    draw_compact_title_bar(frame, area);
+    draw_compact_title_bar(frame, app, area);
     return;
   }
 
@@ -195,7 +195,7 @@ fn draw_title_bar(frame: &mut Frame, area: Rect) {
     .map(|l| {
       Line::from(Span::styled(
         l.to_string(),
-        Style::default().fg(theme::ACCENT),
+        Style::default().fg(t.accent),
       ))
     })
     .collect();
@@ -213,16 +213,17 @@ fn draw_title_bar(frame: &mut Frame, area: Rect) {
   };
   let version_para = Paragraph::new(VERSION)
     .alignment(Alignment::Right)
-    .style(Style::default().fg(theme::TEXT_DIM));
+    .style(Style::default().fg(t.text_dim));
   frame.render_widget(version_para, version_area);
 
   // Thin separator below art
   let sep_str = "─".repeat(area.width as usize);
-  let sep = Paragraph::new(sep_str).style(Style::default().fg(theme::BORDER));
+  let sep = Paragraph::new(sep_str).style(Style::default().fg(t.border));
   frame.render_widget(sep, sep_area);
 }
 
-fn draw_compact_title_bar(frame: &mut Frame, area: Rect) {
+fn draw_compact_title_bar(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   let inner = Layout::default()
     .direction(Direction::Vertical)
     .constraints([Constraint::Length(1), Constraint::Length(1)])
@@ -234,15 +235,15 @@ fn draw_compact_title_bar(frame: &mut Frame, area: Rect) {
     Line::from(vec![
       Span::styled(
         title,
-        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
       ),
       Span::raw(" ".repeat(width - title.len() - VERSION.len())),
-      Span::styled(VERSION, Style::default().fg(theme::TEXT_DIM)),
+      Span::styled(VERSION, Style::default().fg(t.text_dim)),
     ])
   } else {
     Line::from(Span::styled(
       truncate(title, width),
-      Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD),
     ))
   };
 
@@ -250,13 +251,14 @@ fn draw_compact_title_bar(frame: &mut Frame, area: Rect) {
   frame.render_widget(title_para, inner[0]);
 
   let sep_str = "─".repeat(area.width as usize);
-  let sep = Paragraph::new(sep_str).style(Style::default().fg(theme::BORDER));
+  let sep = Paragraph::new(sep_str).style(Style::default().fg(t.border));
   frame.render_widget(sep, inner[1]);
 }
 
 // ── Search + filter row ────────────────────────────────────────────────────
 
 fn draw_search_row(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   // Row 0: content; row 1: separator
   let content_area = Rect { height: 1, ..area };
   let sep_area = Rect { y: area.y + 1, height: 1, ..area };
@@ -272,9 +274,9 @@ fn draw_search_row(frame: &mut Frame, app: &App, area: Rect) {
     " / Search items...".to_string()
   };
   let search_style = if app.search_active {
-    Style::default().fg(theme::TEXT)
+    Style::default().fg(t.text)
   } else {
-    Style::default().fg(theme::TEXT_DIM)
+    Style::default().fg(t.text_dim)
   };
   frame.render_widget(Paragraph::new(search_text).style(search_style), cols[0]);
 
@@ -282,16 +284,16 @@ fn draw_search_row(frame: &mut Frame, app: &App, area: Rect) {
   let filter_label =
     if n > 0 { format!(" Filters ({n}) ") } else { " Filters ".to_string() };
   let filter_style = if app.filter_focus {
-    Style::default().fg(theme::ACCENT)
+    Style::default().fg(t.accent)
   } else {
-    Style::default().fg(theme::TEXT_DIM)
+    Style::default().fg(t.text_dim)
   };
   frame
     .render_widget(Paragraph::new(filter_label).style(filter_style), cols[1]);
 
   let sep = "─".repeat(area.width as usize);
   frame.render_widget(
-    Paragraph::new(sep).style(Style::default().fg(theme::BORDER)),
+    Paragraph::new(sep).style(Style::default().fg(t.border)),
     sep_area,
   );
 }
@@ -307,12 +309,13 @@ struct MainRowRects {
 }
 
 fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
+  let t = app.active_theme.theme();
   // ── A2 State 3: dual-reader (left 50% | right 50%) ──────────────────────
   if app.reader_dual_active && app.reader_active {
     let inner_w = area.width.saturating_sub(2);
     let right_w = (inner_w / 2).max(1);
     let (left_rect, right_rect) =
-      draw_horiz_split_box(frame, area, right_w, "Reader", "Reader");
+      draw_horiz_split_box(frame, area, right_w, "Reader", "Reader", &t);
     if let Some(editor) = app.reader.as_mut() {
       editor.update_layout(left_rect);
       cli_text_reader::draw_editor(frame, left_rect, editor);
@@ -323,7 +326,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     } else {
       let hint = Paragraph::new("No paper loaded\n\nLdr+v → open feed · Enter to load")
         .alignment(Alignment::Center)
-        .style(Style::default().fg(theme::TEXT_DIM));
+        .style(Style::default().fg(t.text_dim));
       frame.render_widget(hint, right_rect);
     }
     return MainRowRects {
@@ -339,7 +342,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     let inner_w = area.width.saturating_sub(2);
     let reader_w = (inner_w * 60 / 100).max(1);
     let (feed_rect, reader_rect) =
-      draw_horiz_split_box(frame, area, reader_w, "Feed", "Reader");
+      draw_horiz_split_box(frame, area, reader_w, "Feed", "Reader", &t);
     draw_feed_pane(frame, app, feed_rect);
     if let Some(editor) = app.reader.as_mut() {
       editor.update_layout(reader_rect);
@@ -374,7 +377,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     let inner_w = area.width.saturating_sub(2);
     let notes_w = (inner_w * 40 / 100).max(1);
     let (reader_rect, notes_rect) =
-      draw_horiz_split_box(frame, area, notes_w, "Reader", "Notes");
+      draw_horiz_split_box(frame, area, notes_w, "Reader", "Notes", &t);
     if let Some(editor) = app.reader.as_mut() {
       let t = std::time::Instant::now();
       editor.update_layout(reader_rect);
@@ -404,7 +407,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
       "Details"
     };
     let (feed_rect, bottom_rect) =
-      draw_vert_split_box(frame, area, "Feed", bottom_title);
+      draw_vert_split_box(frame, area, "Feed", bottom_title, &t);
 
     let t = std::time::Instant::now();
     draw_feed_pane(frame, app, feed_rect);
@@ -452,7 +455,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
   };
 
   let (feed_rect, right_rect) =
-    draw_horiz_split_box(frame, area, right_w, "Feed", right_title);
+    draw_horiz_split_box(frame, area, right_w, "Feed", right_title, &t);
 
   let t = std::time::Instant::now();
   draw_feed_pane(frame, app, feed_rect);
@@ -493,15 +496,198 @@ fn draw_feed_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     .constraints([Constraint::Length(1), Constraint::Min(0)])
     .split(area);
   draw_feed_tab_bar(frame, app, rows[0]);
+  let content_area = rows[1];
+
+  // Discoveries tab: show plan checklist or query input instead of the feed table.
+  if app.feed_tab == FeedTab::Discoveries {
+    if app.discovery_plan.is_some() {
+      draw_discovery_checklist(frame, app, content_area);
+      return;
+    }
+    if app.discovery_query_active {
+      draw_discovery_query_bar(frame, app, content_area);
+      return;
+    }
+  }
+
   // Narrow pane: switch to title-only list to avoid squished columns.
   if area.width < 70 {
-    draw_narrow_feed(frame, app, rows[1]);
+    draw_narrow_feed(frame, app, content_area);
   } else {
-    draw_item_table(frame, app, rows[1]);
+    draw_item_table(frame, app, content_area);
+  }
+}
+
+fn draw_discovery_query_bar(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
+  let label = "Search: ";
+  let cursor = "_";
+  let query_line = Line::from(vec![
+    Span::styled(label, Style::default().fg(t.text_dim)),
+    Span::styled(
+      format!("{}{}", app.discovery_query, cursor),
+      Style::default().fg(t.text),
+    ),
+  ]);
+  let bar_h = 2.min(area.height);
+  let bar_rect = Rect { x: area.x, y: area.y, width: area.width, height: bar_h };
+  frame.render_widget(
+    Paragraph::new(vec![
+      query_line,
+      Line::from(Span::styled(
+        "Enter: search  Esc: cancel",
+        Style::default().fg(t.text_dim),
+      )),
+    ]),
+    bar_rect,
+  );
+}
+
+fn draw_discovery_checklist(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
+  let plan = match &app.discovery_plan {
+    Some(p) => p,
+    None => return,
+  };
+
+  let cursor = app.discovery_plan_cursor;
+  let w = area.width as usize;
+  let mut lines: Vec<Line> = Vec::new();
+
+  // Header
+  let header_text = format!("Discovery: \"{}\"", plan.topic);
+  lines.push(Line::from(Span::styled(
+    truncate(&header_text, w),
+    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+  )));
+  if !plan.summary.is_empty() {
+    lines.push(Line::from(Span::styled(
+      truncate(&plan.summary, w),
+      Style::default().fg(t.text_dim),
+    )));
+  }
+  lines.push(Line::from(Span::styled(
+    "─".repeat(w),
+    Style::default().fg(t.border),
+  )));
+
+  // arXiv category rows
+  if !plan.arxiv_categories.is_empty() {
+    lines.push(Line::from(Span::styled(
+      "arXiv categories",
+      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+    )));
+    for (i, cat) in plan.arxiv_categories.iter().enumerate() {
+      let checked = app.discovery_plan_selected.get(i).copied().unwrap_or(false);
+      let is_cursor = i == cursor;
+      let cb = if checked { "[x]" } else { "[ ]" };
+      let text = format!("  {cb} {cat}");
+      let style = if is_cursor {
+        Style::default()
+          .bg(t.bg_selection)
+          .fg(t.text)
+          .add_modifier(Modifier::BOLD)
+      } else if checked {
+        Style::default().fg(t.accent)
+      } else {
+        Style::default().fg(t.text_dim)
+      };
+      lines.push(Line::from(Span::styled(truncate(&text, w), style)));
+    }
+    lines.push(Line::from(""));
+  }
+
+  // RSS feed rows
+  let n_cats = plan.arxiv_categories.len();
+  if !plan.rss_urls.is_empty() {
+    lines.push(Line::from(Span::styled(
+      "RSS feeds",
+      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+    )));
+    for (j, feed) in plan.rss_urls.iter().enumerate() {
+      let idx = n_cats + j;
+      let checked = app.discovery_plan_selected.get(idx).copied().unwrap_or(false);
+      let is_cursor = idx == cursor;
+      let cb = if checked { "[x]" } else { "[ ]" };
+      let reason = if feed.reason.is_empty() {
+        String::new()
+      } else {
+        format!("  — {}", feed.reason)
+      };
+      let text = format!("  {cb} {}{}", feed.name, reason);
+      let style = if is_cursor {
+        Style::default()
+          .bg(t.bg_selection)
+          .fg(t.text)
+          .add_modifier(Modifier::BOLD)
+      } else if checked {
+        Style::default().fg(t.accent)
+      } else {
+        Style::default().fg(t.text_dim)
+      };
+      lines.push(Line::from(Span::styled(truncate(&text, w), style)));
+    }
+    lines.push(Line::from(""));
+  }
+
+  // Hint line pinned at bottom if space allows; otherwise append inline.
+  let hint = Line::from(Span::styled(
+    "j/k: navigate  Space: toggle  a: add selected  Esc: dismiss",
+    Style::default().fg(t.text_dim),
+  ));
+  let total_lines = lines.len() + 1; // +1 for hint
+  let height = area.height as usize;
+
+  let (scroll, show_hint_inline) = if total_lines <= height {
+    (0usize, true)
+  } else {
+    // Scroll to keep cursor row visible.
+    let cursor_row = lines
+      .iter()
+      .enumerate()
+      .find(|(_, l)| {
+        l.spans.first().map_or(false, |s| {
+          s.style.bg == Some(t.bg_selection)
+        })
+      })
+      .map(|(i, _)| i)
+      .unwrap_or(0);
+    let raw_scroll = if cursor_row >= height.saturating_sub(2) {
+      cursor_row.saturating_sub(height.saturating_sub(3))
+    } else {
+      0
+    };
+    // Cap so we never scroll past the last line — no blank space at bottom.
+    let scroll = raw_scroll.min(total_lines.saturating_sub(height));
+    (scroll, false)
+  };
+
+  if show_hint_inline {
+    lines.push(hint);
+  }
+
+  let para = Paragraph::new(lines).scroll((scroll as u16, 0));
+  frame.render_widget(para, area);
+
+  if !show_hint_inline && area.height > 0 {
+    let hint_area = Rect {
+      x: area.x,
+      y: area.y + area.height - 1,
+      width: area.width,
+      height: 1,
+    };
+    frame.render_widget(
+      Paragraph::new(Line::from(Span::styled(
+        "j/k: navigate  Space: toggle  a: add selected  Esc: dismiss",
+        Style::default().fg(t.text_dim),
+      ))),
+      hint_area,
+    );
   }
 }
 
 fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
+  let t = app.active_theme.theme();
   let viewport_rows = area.height as usize;
   let selected = app.active_selected_index();
 
@@ -514,54 +700,63 @@ fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
   } else if selected >= offset + viewport_rows {
     offset = selected + 1 - viewport_rows;
   }
-  offset = offset.min(total.saturating_sub(1));
+  // Cap at total - viewport_rows so the last item sits at the bottom edge, not the top.
+  offset = offset.min(total.saturating_sub(viewport_rows));
   app.set_active_list_offset(offset);
 
   let visible = app.visible_items();
-  let title_w = area.width.saturating_sub(2) as usize;
+  // Reserve space for prefix (2) + " — Type — Date" suffix (~20 chars).
+  let suffix_w = 20usize;
+  let prefix_w = 2usize;
+  let title_w = (area.width as usize).saturating_sub(prefix_w + suffix_w).max(10);
   let mut y = area.y;
   for (abs_i, item) in visible.iter().enumerate().skip(offset) {
     if y >= area.y + area.height {
       break;
     }
     let is_selected = abs_i == selected;
-    let wrapped = textwrap::wrap(&item.title, title_w.max(10));
+    let marker = if is_selected { "▶ " } else { "  " };
+    let type_label = item.content_type.short_label();
+    // Short date: first 7 chars of published_at (YYYY-MM).
+    let date = &item.published_at[..item.published_at.len().min(7)];
+    let suffix = format!(" — {type_label} — {date}");
+
+    let wrapped = textwrap::wrap(&item.title, title_w);
     let line_count = wrapped.len().min(2);
     for (li, line) in wrapped.iter().take(line_count).enumerate() {
       if y >= area.y + area.height {
         break;
       }
-      let prefix = if li == 0 {
-        if is_selected { "▶ " } else { "  " }
+      let text = if li == line_count - 1 {
+        // Append metadata on the last title line.
+        format!("{marker}{line}{suffix}")
       } else {
-        "  "
+        format!("{marker}{line}")
       };
       let style = if is_selected {
-        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD)
       } else {
-        Style::default().fg(theme::TEXT_DIM)
+        Style::default().fg(t.text_dim)
       };
       let row_rect = Rect { x: area.x, y, width: area.width, height: 1 };
-      frame.render_widget(
-        Paragraph::new(format!("{prefix}{line}")).style(style),
-        row_rect,
-      );
+      frame.render_widget(Paragraph::new(text).style(style), row_rect);
       y += 1;
     }
   }
 }
 
 fn draw_feed_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let inbox_style = if app.feed_tab == FeedTab::Inbox {
-    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
+    Style::default().fg(t.text).add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(theme::TEXT_DIM)
+    Style::default().fg(t.text_dim)
   };
   let discovery_style = if app.feed_tab == FeedTab::Discoveries {
-    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
+    Style::default().fg(t.text).add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(theme::TEXT_DIM)
+    Style::default().fg(t.text_dim)
   };
   let spin = if app.discovery_loading {
     format!(" {}", SPINNER[app.spinner_frame % SPINNER.len()])
@@ -580,22 +775,23 @@ fn draw_feed_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
+  let t = app.active_theme.theme();
   let t_item_table = std::time::Instant::now();
 
   let header = Row::new(vec![
-    Cell::from(" ").style(Style::default().fg(theme::TEXT_DIM)),
+    Cell::from(" ").style(Style::default().fg(t.text_dim)),
     Cell::from("Source")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
     Cell::from("Type")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
     Cell::from("Title")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
     Cell::from("Author")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
     Cell::from("Date")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
     Cell::from("State")
-      .style(Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD)),
+      .style(Style::default().fg(t.header).add_modifier(Modifier::BOLD)),
   ])
   .style(Style::default().add_modifier(Modifier::UNDERLINED))
   .height(1);
@@ -693,20 +889,20 @@ fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
       let signal_style = match item.signal {
         crate::models::SignalLevel::Primary => {
-          Style::default().fg(theme::ACCENT)
+          Style::default().fg(t.accent)
         }
         crate::models::SignalLevel::Secondary => {
-          Style::default().fg(theme::TEXT_DIM)
+          Style::default().fg(t.text_dim)
         }
         crate::models::SignalLevel::Tertiary => {
-          Style::default().fg(theme::BORDER)
+          Style::default().fg(t.border)
         }
       };
 
       let row_style = if is_selected {
         Style::default()
-          .bg(theme::BG_SELECTION)
-          .fg(theme::TEXT)
+          .bg(t.bg_selection)
+          .fg(t.text)
           .add_modifier(Modifier::BOLD)
       } else {
         Style::default()
@@ -722,15 +918,15 @@ fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
           item.source_name.clone()
         })
-        .style(Style::default().fg(theme::ACCENT)),
+        .style(Style::default().fg(t.accent)),
         Cell::from(item.content_type.short_label())
-          .style(Style::default().fg(theme::TEXT_DIM)),
+          .style(Style::default().fg(t.text_dim)),
         Cell::from(Text::from(title_lines.clone())),
-        Cell::from(author).style(Style::default().fg(theme::TEXT_DIM)),
+        Cell::from(author).style(Style::default().fg(t.text_dim)),
         Cell::from(item.published_at.as_str())
-          .style(Style::default().fg(theme::TEXT_DIM)),
+          .style(Style::default().fg(t.text_dim)),
         Cell::from(item.workflow_state.short_label())
-          .style(Style::default().fg(theme::TEXT_DIM)),
+          .style(Style::default().fg(t.text_dim)),
       ])
       .style(row_style)
       .height(*row_height)
@@ -783,6 +979,7 @@ fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   let inner = area;
   let focused = app.filter_focus;
 
@@ -794,7 +991,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
 
   let hrule = "\u{2500}".repeat(inner.width as usize);
 
-  lines.push(filter_header("Source"));
+  lines.push(filter_header("Source", &t));
   for name in app.filter_source_names() {
     let active = f.sources.contains(&name);
     let cursor = focused && s == c;
@@ -804,8 +1001,8 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     let checkbox = if active { "[x]" } else { "[ ]" };
     let line = if cursor {
       let hl = Style::default()
-        .bg(theme::BG_SELECTION)
-        .fg(theme::TEXT)
+        .bg(t.bg_selection)
+        .fg(t.text)
         .add_modifier(Modifier::BOLD);
       Line::from(vec![
         Span::styled("  ", hl),
@@ -816,14 +1013,14 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     } else if active {
       Line::from(vec![
         Span::raw("  "),
-        Span::styled(checkbox, Style::default().fg(theme::ACCENT)),
+        Span::styled(checkbox, Style::default().fg(t.accent)),
         Span::raw(" "),
-        Span::styled(name, Style::default().fg(theme::ACCENT)),
+        Span::styled(name, Style::default().fg(t.accent)),
       ])
     } else {
       Line::from(vec![
         Span::raw("  "),
-        Span::styled(checkbox, Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(checkbox, Style::default().fg(t.text_dim)),
         Span::raw(" "),
         Span::raw(name),
       ])
@@ -833,7 +1030,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
   }
   lines.push(Line::from(""));
 
-  lines.push(filter_header("Signal"));
+  lines.push(filter_header("Signal", &t));
   if focused && s == c {
     cursor_line = lines.len();
   }
@@ -841,6 +1038,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "primary",
     f.signals.contains(&SignalLevel::Primary),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -850,6 +1048,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "secondary",
     f.signals.contains(&SignalLevel::Secondary),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -859,11 +1058,12 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "tertiary",
     f.signals.contains(&SignalLevel::Tertiary),
     focused && s == c,
+    &t,
   ));
   s += 1;
   lines.push(Line::from(""));
 
-  lines.push(filter_header("Type"));
+  lines.push(filter_header("Type", &t));
   if focused && s == c {
     cursor_line = lines.len();
   }
@@ -871,6 +1071,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "paper",
     f.content_types.contains(&ContentType::Paper),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -880,6 +1081,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "article",
     f.content_types.contains(&ContentType::Article),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -889,11 +1091,12 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "digest",
     f.content_types.contains(&ContentType::Digest),
     focused && s == c,
+    &t,
   ));
   s += 1;
   lines.push(Line::from(""));
 
-  lines.push(filter_header("State"));
+  lines.push(filter_header("State", &t));
   if focused && s == c {
     cursor_line = lines.len();
   }
@@ -901,6 +1104,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "inbox",
     f.workflow_states.contains(&WorkflowState::Inbox),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -910,6 +1114,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "skimmed",
     f.workflow_states.contains(&WorkflowState::Skimmed),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -919,6 +1124,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "queued",
     f.workflow_states.contains(&WorkflowState::Queued),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -928,6 +1134,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "read",
     f.workflow_states.contains(&WorkflowState::DeepRead),
     focused && s == c,
+    &t,
   ));
   s += 1;
   if focused && s == c {
@@ -937,11 +1144,12 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     "archived",
     f.workflow_states.contains(&WorkflowState::Archived),
     focused && s == c,
+    &t,
   ));
   s += 1;
 
   lines
-    .push(Line::from(Span::styled(hrule, Style::default().fg(theme::BORDER))));
+    .push(Line::from(Span::styled(hrule, Style::default().fg(t.border))));
 
   let clear_hl = focused && s == c;
   if clear_hl {
@@ -949,11 +1157,11 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
   }
   let clear_style = if clear_hl {
     Style::default()
-      .bg(theme::BG_SELECTION)
-      .fg(theme::TEXT)
+      .bg(t.bg_selection)
+      .fg(t.text)
       .add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(theme::TEXT_DIM)
+    Style::default().fg(t.text_dim)
   };
   lines
     .push(Line::from(Span::styled("[c] clear all".to_string(), clear_style)));
@@ -982,6 +1190,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+  let t = app.active_theme.theme();
   let t_details = std::time::Instant::now();
 
   // Add 1-char left margin so text doesn't abut the divider.
@@ -1004,37 +1213,37 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = vec![
       Line::from(Span::styled(
         truncate(&item.title, inner.width as usize),
-        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
       )),
       Line::from(""),
       Line::from(vec![
-        Span::styled("Authors  ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Authors  ", Style::default().fg(t.text_dim)),
         Span::raw(truncate(&authors, (inner.width as usize).saturating_sub(9))),
       ]),
       Line::from(vec![
-        Span::styled("Source   ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Source   ", Style::default().fg(t.text_dim)),
         Span::styled(
           if item.source_name.is_empty() {
             item.source_platform.short_label().to_string()
           } else {
             item.source_name.clone()
           },
-          Style::default().fg(theme::ACCENT),
+          Style::default().fg(t.accent),
         ),
         Span::raw("  "),
         Span::styled(
           item.content_type.short_label(),
-          Style::default().fg(theme::TEXT_DIM),
+          Style::default().fg(t.text_dim),
         ),
       ]),
     ];
 
     if item.source_platform == SourcePlatform::HuggingFace {
       lines.push(Line::from(vec![
-        Span::styled("Upvotes  ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Upvotes  ", Style::default().fg(t.text_dim)),
         Span::styled(
           format!("\u{2191} {}", item.upvote_count),
-          Style::default().fg(theme::SUCCESS),
+          Style::default().fg(t.success),
         ),
       ]));
     }
@@ -1042,25 +1251,25 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref repo) = item.github_repo {
       let display = repo.strip_prefix("https://").unwrap_or(repo.as_str());
       lines.push(Line::from(vec![
-        Span::styled("Repo     ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Repo     ", Style::default().fg(t.text_dim)),
         Span::styled(
           truncate(display, (inner.width as usize).saturating_sub(9)),
-          Style::default().fg(theme::ACCENT),
+          Style::default().fg(t.accent),
         ),
       ]));
     }
 
     lines.extend([
       Line::from(vec![
-        Span::styled("Tags     ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Tags     ", Style::default().fg(t.text_dim)),
         Span::raw(truncate(&tags, (inner.width as usize).saturating_sub(9))),
       ]),
       Line::from(vec![
-        Span::styled("State    ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("State    ", Style::default().fg(t.text_dim)),
         Span::raw(item.workflow_state.short_label()),
       ]),
       Line::from(vec![
-        Span::styled("Date     ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("Date     ", Style::default().fg(t.text_dim)),
         Span::raw(item.published_at.as_str()),
       ]),
     ]);
@@ -1069,7 +1278,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       lines.push(Line::from(""));
       lines.push(Line::from(Span::styled(
         "Benchmarks",
-        Style::default().fg(theme::HEADER).add_modifier(Modifier::UNDERLINED),
+        Style::default().fg(t.header).add_modifier(Modifier::UNDERLINED),
       )));
       for b in item.benchmark_results.iter().take(3) {
         lines.push(Line::from(Span::styled(
@@ -1077,7 +1286,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             &format!("  {}/{}: {} ({})", b.task, b.dataset, b.score, b.metric),
             inner.width as usize,
           ),
-          Style::default().fg(theme::TEXT_DIM),
+          Style::default().fg(t.text_dim),
         )));
       }
     }
@@ -1086,17 +1295,17 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       Line::from(""),
       Line::from(Span::styled(
         "Summary",
-        Style::default().fg(theme::HEADER).add_modifier(Modifier::UNDERLINED),
+        Style::default().fg(t.header).add_modifier(Modifier::UNDERLINED),
       )),
       Line::from(item.summary_short.as_str()),
       Line::from(""),
       Line::from(Span::styled(
         "URL",
-        Style::default().fg(theme::HEADER).add_modifier(Modifier::UNDERLINED),
+        Style::default().fg(t.header).add_modifier(Modifier::UNDERLINED),
       )),
       Line::from(Span::styled(
         truncate(&item.url, inner.width as usize),
-        Style::default().fg(theme::TEXT_DIM),
+        Style::default().fg(t.text_dim),
       )),
     ]);
 
@@ -1105,7 +1314,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
           notif.as_str(),
-          Style::default().fg(theme::WARNING),
+          Style::default().fg(t.warning),
         )));
       }
     }
@@ -1114,7 +1323,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       lines.push(Line::from(""));
       lines.push(Line::from(Span::styled(
         "Repo linked: press v to view",
-        Style::default().fg(theme::WARNING),
+        Style::default().fg(t.warning),
       )));
     }
 
@@ -1160,7 +1369,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
   } else {
     let empty = Paragraph::new("No item selected")
-      .style(Style::default().fg(theme::TEXT_DIM));
+      .style(Style::default().fg(t.text_dim));
     frame.render_widget(empty, inner);
   }
   log::debug!(
@@ -1169,10 +1378,10 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
   );
 }
 
-fn filter_header(label: &'static str) -> Line<'static> {
+fn filter_header(label: &'static str, t: &crate::theme::Theme) -> Line<'static> {
   Line::from(Span::styled(
     label,
-    Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD),
+    Style::default().fg(t.header).add_modifier(Modifier::BOLD),
   ))
 }
 
@@ -1180,12 +1389,13 @@ fn filter_row(
   label: &'static str,
   active: bool,
   cursor: bool,
+  t: &crate::theme::Theme,
 ) -> Line<'static> {
   let checkbox = if active { "[x]" } else { "[ ]" };
   if cursor {
     let hl = Style::default()
-      .bg(theme::BG_SELECTION)
-      .fg(theme::TEXT)
+      .bg(t.bg_selection)
+      .fg(t.text)
       .add_modifier(Modifier::BOLD);
     Line::from(vec![
       Span::styled("  ", hl),
@@ -1196,14 +1406,14 @@ fn filter_row(
   } else if active {
     Line::from(vec![
       Span::raw("  "),
-      Span::styled(checkbox, Style::default().fg(theme::ACCENT)),
+      Span::styled(checkbox, Style::default().fg(t.accent)),
       Span::raw(" "),
-      Span::styled(label, Style::default().fg(theme::ACCENT)),
+      Span::styled(label, Style::default().fg(t.accent)),
     ])
   } else {
     Line::from(vec![
       Span::raw("  "),
-      Span::styled(checkbox, Style::default().fg(theme::TEXT_DIM)),
+      Span::styled(checkbox, Style::default().fg(t.text_dim)),
       Span::raw(" "),
       Span::raw(label),
     ])
@@ -1213,6 +1423,7 @@ fn filter_row(
 // ── Footer ─────────────────────────────────────────────────────────────────
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   let rows = Layout::default()
     .direction(Direction::Vertical)
     .constraints([Constraint::Length(1), Constraint::Length(1)])
@@ -1226,7 +1437,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     .flatten()
     .and_then(|item| {
       if item.github_owner.is_some() && item.github_repo_name.is_some() {
-        Some(("  │  v: repo viewer", theme::SUCCESS))
+        Some(("  │  v: repo viewer", t.success))
       } else {
         None
       }
@@ -1238,10 +1449,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let spin = SPINNER[app.spinner_frame % SPINNER.len()];
     Line::from(Span::styled(
       format!("{spin} fetching article…"),
-      Style::default().fg(theme::WARNING),
+      Style::default().fg(t.warning),
     ))
   } else if let Some(msg) = &app.status_message {
-    Line::from(Span::styled(msg.as_str(), Style::default().fg(theme::WARNING)))
+    Line::from(Span::styled(msg.as_str(), Style::default().fg(t.warning)))
   } else if app.is_loading {
     const SPINNER: &[&str] =
       &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1250,12 +1461,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let prefix = if app.is_refreshing { "↻ refreshing" } else { "fetching" };
     Line::from(Span::styled(
       format!("{spin} {prefix}: {}  │  {} items", sources, app.items.len()),
-      Style::default().fg(theme::WARNING),
+      Style::default().fg(t.warning),
     ))
   } else {
     let visible = app.visible_items().len();
     let total = app.items_for_tab().len();
-    let gray = Style::default().fg(theme::TEXT_DIM);
+    let gray = Style::default().fg(t.text_dim);
     let mut spans = if app.active_filters.is_empty()
       && app.search_query.is_empty()
     {
@@ -1270,7 +1481,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
       if !app.active_filters.is_empty() {
         s.push(Span::styled(
           "  [filtered]",
-          Style::default().fg(theme::WARNING),
+          Style::default().fg(t.warning),
         ));
       }
       s
@@ -1283,7 +1494,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
   frame.render_widget(Paragraph::new(vec![stats_line]), rows[0]);
 
   // Row 1: single-line hint
-  let gray = Style::default().fg(theme::TEXT_DIM);
+  let gray = Style::default().fg(t.text_dim);
   let feed_hint = if app.feed_tab == FeedTab::Discoveries {
     "Ldr+d: inbox"
   } else {
@@ -1299,6 +1510,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 // ── A1: floating reader popup (Ldr+Enter) ─────────────────────────────────
 
 fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
+  let t = app.active_theme.theme();
   // Small bottom-center popup: ~20% of height, ~60% of width.
   let popup_w = (area.width as u32 * 60 / 100) as u16;
   let popup_h = ((area.height as u32 * 20 / 100) as u16).max(8);
@@ -1310,10 +1522,10 @@ fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 
   let block = Block::default()
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(theme::BORDER_ACTIVE))
+    .border_style(Style::default().fg(t.border_active))
     .title(Span::styled(
       " Reader · Esc to close ",
-      Style::default().fg(theme::TEXT_DIM),
+      Style::default().fg(t.text_dim),
     ));
 
   let inner = block.inner(popup_rect);
@@ -1328,6 +1540,7 @@ fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 // ── A2 State 3: persistent bottom pane (feed list or details) ─────────────
 
 fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   const POPUP_H: u16 = 11; // border(2) + hint row(1) + sep(1) + content(7)
   let popup_w = (area.width as u32 * 60 / 100) as u16;
   let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
@@ -1338,7 +1551,7 @@ fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
 
   let focused = app.reader_bottom_focused;
   let border_color =
-    if focused { theme::BORDER_ACTIVE } else { theme::BORDER };
+    if focused { t.border_active } else { t.border };
 
   let title_str = if app.reader_bottom_details {
     " Details · d: back  j/k: scroll  Esc: back "
@@ -1348,7 +1561,7 @@ fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
   let block = Block::default()
     .borders(Borders::ALL)
     .border_style(Style::default().fg(border_color))
-    .title(Span::styled(title_str, Style::default().fg(theme::TEXT_DIM)));
+    .title(Span::styled(title_str, Style::default().fg(t.text_dim)));
 
   let inner = block.inner(popup_rect);
   frame.render_widget(block, popup_rect);
@@ -1365,6 +1578,7 @@ fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_bottom_pane_details(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   let sel = app.reader_feed_popup_selected;
   let items = app.items_for_tab();
   let Some(item) = items.get(sel) else { return };
@@ -1374,11 +1588,12 @@ fn draw_bottom_pane_details(frame: &mut Frame, app: &App, area: Rect) {
   let para = Paragraph::new(text)
     .wrap(ratatui::widgets::Wrap { trim: false })
     .scroll((scroll as u16, 0))
-    .style(Style::default().fg(theme::TEXT_DIM));
+    .style(Style::default().fg(t.text_dim));
   frame.render_widget(para, area);
 }
 
 fn draw_bottom_pane_feed(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.active_theme.theme();
   let items = app.items_for_tab();
   let sel = app.reader_feed_popup_selected;
   let max_visible = area.height as usize;
@@ -1394,12 +1609,12 @@ fn draw_bottom_pane_feed(frame: &mut Frame, app: &App, area: Rect) {
     if is_selected {
       lines.push(Line::from(Span::styled(
         format!("▶ {title}"),
-        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
       )));
     } else {
       lines.push(Line::from(Span::styled(
         format!("  {title}"),
-        Style::default().fg(theme::TEXT_DIM),
+        Style::default().fg(t.text_dim),
       )));
     }
   }
@@ -1419,6 +1634,7 @@ fn truncate_str(s: &str, max: usize) -> String {
 // ── Sources popup ──────────────────────────────────────────────────────────
 
 fn draw_sources_popup(frame: &mut Frame, app: &App) {
+  let t = app.active_theme.theme();
   let area = frame.area();
   let popup_w = (area.width as u32 * 70 / 100) as u16;
   let popup_h = (area.height as u32 * 80 / 100) as u16;
@@ -1432,10 +1648,10 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
     .borders(Borders::ALL)
     .title(Span::styled(
       " Manage Sources ",
-      Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD),
     ))
-    .border_style(Style::default().fg(theme::BORDER))
-    .style(Style::default().bg(theme::BG_POPUP));
+    .border_style(Style::default().fg(t.border))
+    .style(Style::default().bg(t.bg_popup));
 
   let inner = block.inner(popup_area);
   frame.render_widget(block, popup_area);
@@ -1448,14 +1664,14 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
   let custom_feeds = &app.config.sources.custom_feeds;
   let cursor = app.sources_cursor;
 
-  let gray = Style::default().fg(theme::TEXT_DIM);
-  let white = Style::default().fg(theme::TEXT);
+  let gray = Style::default().fg(t.text_dim);
+  let white = Style::default().fg(t.text);
   let bold_white =
-    Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD);
-  let cyan = Style::default().fg(theme::ACCENT);
+    Style::default().fg(t.header).add_modifier(Modifier::BOLD);
+  let cyan = Style::default().fg(t.accent);
   let selected_style = Style::default()
-    .bg(theme::BG_SELECTION)
-    .fg(theme::TEXT)
+    .bg(t.bg_selection)
+    .fg(t.text)
     .add_modifier(Modifier::BOLD);
 
   let mut lines: Vec<Line> = Vec::new();
@@ -1466,11 +1682,11 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
   let input_active = app.sources_input_active;
   let input_focused = cursor == 0;
   let border_col = if input_active {
-    theme::SUCCESS
+    t.success
   } else if input_focused {
-    theme::ACCENT
+    t.accent
   } else {
-    theme::BORDER
+    t.border
   };
 
   let input_display = if app.sources_input.is_empty() && !input_active {
@@ -1507,12 +1723,12 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
     }
     SourcesDetectState::Detecting => Line::from(Span::styled(
       "  Detecting...",
-      Style::default().fg(theme::WARNING),
+      Style::default().fg(t.warning),
     )),
     SourcesDetectState::Result(r) => match r {
       DiscoverResult::ArxivCategory(code) => Line::from(Span::styled(
         format!("  Detected: arXiv category {code} — press Enter to confirm"),
-        Style::default().fg(theme::SUCCESS),
+        Style::default().fg(t.success),
       )),
       DiscoverResult::HuggingFaceAlreadyEnabled => Line::from(Span::styled(
         "  Detected: HuggingFace daily papers — already enabled",
@@ -1522,12 +1738,12 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
         let display = truncate(url, w.saturating_sub(36));
         Line::from(Span::styled(
           format!("  Detected: RSS feed at {display} — press Enter to confirm"),
-          Style::default().fg(theme::SUCCESS),
+          Style::default().fg(t.success),
         ))
       }
       DiscoverResult::Failed(msg) => Line::from(Span::styled(
         format!("  {msg}"),
-        Style::default().fg(theme::ERROR),
+        Style::default().fg(t.error),
       )),
     },
   };
@@ -1602,15 +1818,16 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
 // ── Settings view ──────────────────────────────────────────────────────────
 
 fn draw_settings(frame: &mut Frame, app: &App) {
+  let t = app.active_theme.theme();
   let area = frame.area();
 
   let block = Block::default()
     .borders(Borders::ALL)
     .title(Span::styled(
       " Settings ",
-      Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD),
     ))
-    .border_style(Style::default().fg(theme::BORDER));
+    .border_style(Style::default().fg(t.border));
 
   let inner = block.inner(area);
   frame.render_widget(block, area);
@@ -1646,9 +1863,9 @@ fn draw_settings(frame: &mut Frame, app: &App) {
 
   let border_color = |field: usize, editing: bool| -> Color {
     if app.settings_field == field {
-      if editing { theme::SUCCESS } else { theme::ACCENT }
+      if editing { t.success } else { t.accent }
     } else {
-      theme::BORDER
+      t.border
     }
   };
 
@@ -1732,10 +1949,10 @@ fn draw_settings(frame: &mut Frame, app: &App) {
     custom_count.to_string()
   };
 
-  let gray = Style::default().fg(theme::TEXT_DIM);
-  let white = Style::default().fg(theme::TEXT);
+  let gray = Style::default().fg(t.text_dim);
+  let white = Style::default().fg(t.text);
   let bold_white =
-    Style::default().fg(theme::HEADER).add_modifier(Modifier::BOLD);
+    Style::default().fg(t.header).add_modifier(Modifier::BOLD);
 
   let mut lines: Vec<Line> = vec![
     Line::from(""),
@@ -1781,7 +1998,7 @@ fn draw_settings(frame: &mut Frame, app: &App) {
       Span::styled(
         "  [enter to toggle]  ",
         if app.settings_field == 4 {
-          Style::default().fg(theme::ACCENT)
+          Style::default().fg(t.accent)
         } else {
           gray
         },
@@ -1789,7 +2006,27 @@ fn draw_settings(frame: &mut Frame, app: &App) {
       Span::styled(
         app.settings_default_chat_provider.clone(),
         if app.settings_field == 4 {
-          Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD)
+          Style::default().fg(t.success).add_modifier(Modifier::BOLD)
+        } else {
+          white
+        },
+      ),
+    ]),
+    Line::from(""),
+    Line::from(Span::styled("  Theme", white)),
+    Line::from(vec![
+      Span::styled(
+        "  [enter to cycle]  ",
+        if app.settings_field == 5 {
+          Style::default().fg(t.accent)
+        } else {
+          gray
+        },
+      ),
+      Span::styled(
+        app.active_theme.label().to_string(),
+        if app.settings_field == 5 {
+          Style::default().fg(t.success).add_modifier(Modifier::BOLD)
         } else {
           white
         },
@@ -1817,7 +2054,7 @@ fn draw_settings(frame: &mut Frame, app: &App) {
   if app.settings_save_time.is_some() {
     lines.push(Line::from(Span::styled(
       "  Saved.",
-      Style::default().fg(theme::SUCCESS),
+      Style::default().fg(t.success),
     )));
   } else {
     lines.push(Line::from(Span::styled(
@@ -1900,8 +2137,9 @@ fn draw_horiz_split_box(
   right_w: u16,
   left_title: &str,
   right_title: &str,
+  t: &crate::theme::Theme,
 ) -> (Rect, Rect) {
-  let s = Style::default().fg(theme::BORDER);
+  let s = Style::default().fg(t.border);
 
   // Outer border (provides ┌┐└┘ and ─/│ edges)
   frame.render_widget(
@@ -1977,8 +2215,9 @@ fn draw_vert_split_box(
   area: Rect,
   top_title: &str,
   bottom_title: &str,
+  t: &crate::theme::Theme,
 ) -> (Rect, Rect) {
-  let s = Style::default().fg(theme::BORDER);
+  let s = Style::default().fg(t.border);
 
   frame.render_widget(
     Block::default().borders(Borders::ALL).border_style(s),
@@ -2104,6 +2343,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 ];
 
 fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
+  let t = app.active_theme.theme();
   let area = frame.area();
 
   // Centered popup: 80% width, 80% height, min 40×20.
@@ -2118,10 +2358,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
 
   let block = Block::default()
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(theme::BORDER))
+    .border_style(Style::default().fg(t.border))
     .title(Span::styled(
       " help ",
-      Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD),
     ));
   let inner = block.inner(popup_rect);
   frame.render_widget(block, popup_rect);
@@ -2142,10 +2382,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
 
   // Draw tab labels.
   let tab_style_active = Style::default()
-    .fg(theme::TEXT_ON_ACCENT)
-    .bg(theme::ACCENT)
+    .fg(t.text_on_accent)
+    .bg(t.accent)
     .add_modifier(Modifier::BOLD);
-  let tab_style_inactive = Style::default().fg(theme::TEXT_DIM);
+  let tab_style_inactive = Style::default().fg(t.text_dim);
   let mut tab_spans: Vec<Span> = Vec::new();
   for (i, (name, _)) in HELP_SECTIONS.iter().enumerate() {
     let label = format!(" {name} ");
@@ -2155,7 +2395,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
       tab_spans.push(Span::styled(label, tab_style_inactive));
     }
     if i + 1 < HELP_SECTIONS.len() {
-      tab_spans.push(Span::styled("│", Style::default().fg(theme::BORDER)));
+      tab_spans.push(Span::styled("│", Style::default().fg(t.border)));
     }
   }
   frame.render_widget(Paragraph::new(Line::from(tab_spans)), tab_area);
@@ -2163,7 +2403,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
   // Separator.
   let sep = "─".repeat(sep_area.width as usize);
   frame.render_widget(
-    Paragraph::new(Span::styled(sep, Style::default().fg(theme::BORDER))),
+    Paragraph::new(Span::styled(sep, Style::default().fg(t.border))),
     sep_area,
   );
 
@@ -2173,11 +2413,11 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
   let key_col_w = 18u16;
   let desc_col_w = body_area.width.saturating_sub(key_col_w + 4); // padding
 
-  let key_style = Style::default().fg(theme::ACCENT);
+  let key_style = Style::default().fg(t.accent);
   let header_style =
-    Style::default().fg(theme::HEADER).add_modifier(Modifier::UNDERLINED);
-  let desc_style = Style::default().fg(theme::TEXT);
-  let gray = Style::default().fg(theme::TEXT_DIM);
+    Style::default().fg(t.header).add_modifier(Modifier::UNDERLINED);
+  let desc_style = Style::default().fg(t.text);
+  let gray = Style::default().fg(t.text_dim);
 
   let mut body_lines: Vec<Line> = vec![Line::from("")];
   for (key, desc) in bindings.iter() {
