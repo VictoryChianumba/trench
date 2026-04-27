@@ -14,10 +14,11 @@ pub struct AppState {
 
 impl AppState {
   fn state_path() -> PathBuf {
-    let base = std::env::var("HOME")
-      .map(PathBuf::from)
-      .unwrap_or_else(|_| PathBuf::from("."));
-    base.join(".config").join("tentative").join("notes").join(STATE_FILE_NAME)
+    dirs::config_dir()
+      .unwrap_or_else(|| PathBuf::from("."))
+      .join("trench")
+      .join("notes")
+      .join(STATE_FILE_NAME)
   }
 
   pub fn load() -> anyhow::Result<Self> {

@@ -1,8 +1,12 @@
 pub mod elevenlabs;
+pub mod macos_say;
+pub mod piper;
 pub mod playback;
+pub mod provider;
 pub mod stream_buffer;
 
 pub use playback::{PlaybackCommand, PlaybackController, PlaybackStatus};
+pub use provider::TtsProvider;
 
 use std::time::Instant;
 
@@ -49,7 +53,6 @@ pub fn chunk_paragraphs(text: &str) -> Vec<String> {
     let mut start = 0;
     while start < text.len() {
       let end = (start + MAX).min(text.len());
-      // Try to break at a whitespace boundary
       let end = if end < text.len() {
         text[start..end]
           .rfind(char::is_whitespace)
@@ -64,4 +67,41 @@ pub fn chunk_paragraphs(text: &str) -> Vec<String> {
   }
 
   chunks
+}
+
+/// Build a `TtsProvider` from config, with automatic fallback:
+/// explicit `TTS_PROVIDER` → ElevenLabs if key present → macOS `say`.
+pub fn make_provider(
+  config: &crate::config::AppConfig,
+) -> Box<dyn TtsProvider> {
+  let provider_name = if config.tts_provider.is_empty() {
+    if !config.elevenlabs_api_key.is_empty() {
+      "elevenlabs"
+    } else {
+      "say"
+    }
+  } else {
+    config.tts_provider.as_str()
+  };
+
+  match provider_name {
+    "elevenlabs" if !config.elevenlabs_api_key.is_empty() => {
+      Box::new(elevenlabs::ElevenLabsService::new(
+        config.elevenlabs_api_key.clone(),
+        config.voice_id.clone(),
+      ))
+    }
+    "piper" => Box::new(piper::PiperProvider {
+      binary: config.piper_binary.clone(),
+      model: config.piper_model.clone(),
+    }),
+    _ => {
+      let voice = if config.say_voice.is_empty() {
+        "Samantha".to_string()
+      } else {
+        config.say_voice.clone()
+      };
+      Box::new(macos_say::MacOsSayProvider { voice })
+    }
+  }
 }

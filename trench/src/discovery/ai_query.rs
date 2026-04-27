@@ -71,10 +71,7 @@ fn send_prompt(
     content: prompt.to_string(),
     timestamp: chrono::Utc::now(),
   }];
-  provider
-    .send(&messages)
-    .map(|r| r.content)
-    .map_err(|e| e.to_string())
+  provider.send(&messages).map(|r| r.content).map_err(|e| e.to_string())
 }
 
 fn parse_plan(topic: &str, content: &str) -> Result<DiscoveryPlan, String> {

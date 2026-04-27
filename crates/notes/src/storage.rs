@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use crate::Note;
 
 fn notes_dir() -> PathBuf {
-  let base = std::env::var("HOME")
-    .map(PathBuf::from)
-    .unwrap_or_else(|_| PathBuf::from("."));
-  base.join(".config").join("tentative").join("notes")
+  dirs::config_dir()
+    .unwrap_or_else(|| PathBuf::from("."))
+    .join("trench")
+    .join("notes")
 }
 
 fn note_path(article_id: &str) -> PathBuf {

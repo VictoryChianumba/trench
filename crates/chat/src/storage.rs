@@ -10,7 +10,7 @@ use crate::{ChatIndex, ChatSession, ChatSessionMeta};
 fn chats_dir() -> PathBuf {
   let base = dirs::config_dir()
     .unwrap_or_else(|| PathBuf::from("."))
-    .join("tentative")
+    .join("trench")
     .join("chats");
   base
 }

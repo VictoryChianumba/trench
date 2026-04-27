@@ -13,7 +13,7 @@ pub mod theme;
 mod ui;
 mod workflows;
 
-use app::{App, DiscoverResult, PaneId, RepoFetchResult};
+use app::{App, DiscoverResult, FocusedReader, PaneId, RepoFetchResult};
 use crossterm::{
   event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
@@ -607,30 +607,78 @@ pub(crate) fn get_pane_by_number(n: u8, app: &App) -> Option<PaneId> {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  // One-time migration: copy ~/.config/tentative → ~/.config/trench if the
-  // old dir exists and the new one does not yet.
-  if let Some(home) = dirs::home_dir() {
-    let old = home.join(".config/tentative");
-    let new = home.join(".config/trench");
-    if old.exists() && !new.exists() {
-      if let Err(e) = std::fs::rename(&old, &new) {
-        eprintln!("trench: could not migrate config dir ({e}); continuing");
-      }
+fn migrate_legacy_config_dir() {
+  let Some(home) = dirs::home_dir() else {
+    return;
+  };
+
+  let old_root = home.join(".config/tentative");
+  if !old_root.exists() {
+    return;
+  }
+
+  let new_root = home.join(".config/trench");
+  if let Err(e) = std::fs::create_dir_all(&new_root) {
+    eprintln!("trench: could not prepare config dir ({e}); continuing");
+    return;
+  }
+
+  for name in [
+    "config.json",
+    "state.json",
+    "cache.json",
+    "enrichment_cache.json",
+    "discovery_cache.json",
+    "trench.log",
+    "hf_repo_cache.json",
+    "chats",
+    "notes",
+  ] {
+    let old_path = old_root.join(name);
+    let new_path = new_root.join(name);
+    if !old_path.exists() || new_path.exists() {
+      continue;
+    }
+    if let Err(e) = std::fs::rename(&old_path, &new_path) {
+      eprintln!(
+        "trench: could not migrate {} to new config dir ({e}); continuing",
+        old_path.display()
+      );
     }
   }
 
-  let log_path = dirs::home_dir().unwrap().join(".config/trench/trench.log");
-  std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-  let log_file = std::fs::OpenOptions::new()
-    .create(true)
-    .append(true)
-    .open(&log_path)
-    .unwrap();
-  env_logger::Builder::new()
-    .target(env_logger::Target::Pipe(Box::new(log_file)))
-    .filter_level(log::LevelFilter::Debug)
-    .init();
+  let old_root_empty = std::fs::read_dir(&old_root)
+    .map(|mut entries| entries.next().is_none())
+    .unwrap_or(false);
+  if old_root_empty {
+    let _ = std::fs::remove_dir(&old_root);
+  }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+  migrate_legacy_config_dir();
+
+  let log_level = if std::env::var_os("TRENCH_DEBUG_LOG").is_some() {
+    log::LevelFilter::Debug
+  } else {
+    log::LevelFilter::Info
+  };
+  let log_file = dirs::home_dir().and_then(|home| {
+    let path = home.join(".config/trench/trench.log");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()
+  });
+  match log_file {
+    Some(f) => {
+      env_logger::Builder::new()
+        .target(env_logger::Target::Pipe(Box::new(f)))
+        .filter_level(log_level)
+        .init();
+    }
+    None => {
+      env_logger::Builder::new().filter_level(log::LevelFilter::Off).init();
+    }
+  }
   enable_raw_mode()?;
   let mut stdout = io::stdout();
   execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -656,12 +704,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // 2. Apply persisted states to cached items.
   for item in &mut app.items {
     if let Some(state) = app.persisted_states.get(&item.url) {
-      item.workflow_state = state.clone();
+      item.workflow_state = *state;
     }
   }
   for item in &mut app.discovery_items {
     if let Some(state) = app.persisted_states.get(&item.url) {
-      item.workflow_state = state.clone();
+      item.workflow_state = *state;
     }
   }
 
@@ -723,9 +771,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(lines) => {
               log::debug!("reader_open: {} lines", lines.len());
               let editor = cli_text_reader::Editor::new(lines, 80);
-              app.reader = Some(editor);
-              app.reader_active = true;
-              app.focused_pane = PaneId::Reader;
+              if app.fulltext_for_secondary {
+                // State 3: load into the secondary (right) reader pane.
+                app.reader_secondary = Some(editor);
+                app.focused_reader = FocusedReader::Secondary;
+                app.focused_pane = PaneId::SecondaryReader;
+                app.fulltext_for_secondary = false;
+              } else {
+                app.reader = Some(editor);
+                app.reader_active = true;
+                app.focused_pane = PaneId::Reader;
+              }
               app.clear_notification();
             }
             Err(e) => {
@@ -736,6 +792,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
           log::debug!("fulltext drain: channel disconnected");
           app.fulltext_rx = None;
+          app.fulltext_loading = false;
+          app.fulltext_for_secondary = false;
+          app.set_notification("Fetch error: thread disconnected".to_string());
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+      }
+    }
+
+    // ── Drain reader popup fetch ──────────────────────────────────────
+    if let Some(rx) = app.reader_popup_rx.as_ref() {
+      match rx.try_recv() {
+        Ok(result) => {
+          app.reader_popup_rx = None;
+          app.fulltext_loading = false;
+          match result {
+            Ok(lines) => {
+              let editor = cli_text_reader::Editor::new(lines, 80);
+              app.reader = Some(editor);
+              app.reader_popup_active = true;
+              app.clear_notification();
+            }
+            Err(e) => {
+              app.set_notification(format!("Failed to fetch content: {e}"));
+            }
+          }
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+          app.reader_popup_rx = None;
           app.fulltext_loading = false;
           app.set_notification("Fetch error: thread disconnected".to_string());
         }

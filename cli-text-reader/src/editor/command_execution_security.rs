@@ -27,6 +27,8 @@ pub fn parse_secure_command(cmd: &str) -> Result<SecureCommand, String> {
 
   // Whitelist of allowed commands — read-only filesystem and text operations only.
   // Excluded intentionally:
+  //   awk/sed — accept -f/-e flags that execute programs from files/strings; no safe subset
+  //   find — -exec/-execdir/-ok allow arbitrary command execution with clean arguments
   //   env/printenv/history — expose secrets from the process environment and shell history
   //   curl/wget/ping/dig/nslookup — make outbound network connections
   //   tar/zip/unzip/gzip/gunzip/zcat — can write arbitrary files during extraction
@@ -34,47 +36,15 @@ pub fn parse_secure_command(cmd: &str) -> Result<SecureCommand, String> {
   //   PowerShell entries — Windows translation is a separate concern; do not expand attack surface here
   let allowed_commands: HashSet<&str> = [
     // Directory listing and path navigation
-    "ls",
-    "pwd",
-    "find",
-    "locate",
-    "which",
-    "whereis",
+    "ls", "pwd", "locate", "which", "whereis",
     // File viewing (core functionality for text reader)
-    "cat",
-    "less",
-    "more",
-    "head",
-    "tail",
-    "file",
-    "stat",
-    "wc",
-    "nl",
-    // Text processing (read-only)
-    "grep",
-    "awk",
-    "sed",
-    "sort",
-    "uniq",
-    "cut",
-    "tr",
-    "fmt",
-    "fold",
+    "cat", "less", "more", "head", "tail", "file", "stat", "wc", "nl",
+    // Text processing (read-only, no sub-language execution)
+    "grep", "sort", "uniq", "cut", "tr", "fmt", "fold",
     // System information (read-only, no secrets)
-    "date",
-    "uptime",
-    "whoami",
-    "id",
-    "uname",
-    "hostname",
-    "df",
-    "free",
-    "ps",
+    "date", "uptime", "whoami", "id", "uname", "hostname", "df", "free", "ps",
     // Path utilities
-    "basename",
-    "dirname",
-    "realpath",
-    "readlink",
+    "basename", "dirname", "realpath", "readlink",
   ]
   .iter()
   .cloned()
@@ -111,10 +81,7 @@ pub fn parse_secure_command(cmd: &str) -> Result<SecureCommand, String> {
     return Err("Too many arguments (max 50)".to_string());
   }
 
-  Ok(SecureCommand {
-    program: program.clone(),
-    args: parts[1..].to_vec(),
-  })
+  Ok(SecureCommand { program: program.clone(), args: parts[1..].to_vec() })
 }
 
 // Execute a validated command with timeout.
@@ -126,7 +93,8 @@ pub fn execute_secure_command_with_timeout(
   timeout: Duration,
 ) -> Result<CommandOutput, String> {
   use std::io::Read;
-  use std::sync::mpsc;
+  use std::thread;
+  use std::time::Instant;
 
   let mut child = Command::new(&secure_cmd.program)
     .args(&secure_cmd.args)
@@ -138,36 +106,82 @@ pub fn execute_secure_command_with_timeout(
     })?;
 
   // Take ownership of the stdio handles before handing off the child.
-  let mut stdout_handle = child.stdout.take();
-  let mut stderr_handle = child.stderr.take();
+  let stdout_handle = child.stdout.take();
+  let stderr_handle = child.stderr.take();
 
-  let (tx, rx) = mpsc::channel::<std::io::Result<std::process::ExitStatus>>();
-  std::thread::spawn(move || {
-    let _ = tx.send(child.wait());
-  });
-
-  match rx.recv_timeout(timeout) {
-    Ok(Ok(status)) => {
-      let mut stdout_bytes = Vec::new();
-      let mut stderr_bytes = Vec::new();
-      if let Some(ref mut h) = stdout_handle {
-        let _ = h.read_to_end(&mut stdout_bytes);
-      }
-      if let Some(ref mut h) = stderr_handle {
-        let _ = h.read_to_end(&mut stderr_bytes);
-      }
-      Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
-        status,
+  let spawn_reader =
+    |mut handle: Option<std::process::ChildStdout>| -> thread::JoinHandle<Vec<u8>> {
+      thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(ref mut h) = handle {
+          let _ = h.read_to_end(&mut bytes);
+        }
+        bytes
       })
+    };
+  let spawn_error_reader =
+    |mut handle: Option<std::process::ChildStderr>| -> thread::JoinHandle<Vec<u8>> {
+      thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(ref mut h) = handle {
+          let _ = h.read_to_end(&mut bytes);
+        }
+        bytes
+      })
+    };
+
+  let stdout_reader = spawn_reader(stdout_handle);
+  let stderr_reader = spawn_error_reader(stderr_handle);
+
+  let deadline = Instant::now() + timeout;
+  let status = loop {
+    match child.try_wait() {
+      Ok(Some(status)) => break Ok(status),
+      Ok(None) => {
+        if Instant::now() >= deadline {
+          let _ = child.kill();
+          match child.wait() {
+            Ok(_) => {
+              break Err(format!(
+                "Command timed out after {} seconds",
+                timeout.as_secs()
+              ));
+            }
+            Err(e) => {
+              break Err(format!("Failed to reap timed out command: {e}"));
+            }
+          }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let sleep_for = remaining.min(Duration::from_millis(50));
+        thread::sleep(sleep_for);
+      }
+      Err(e) => break Err(format!("Failed to wait for command: {e}")),
     }
-    Ok(Err(e)) => Err(format!("Failed to wait for command: {e}")),
-    Err(mpsc::RecvTimeoutError::Timeout) => {
-      Err(format!("Command timed out after {} seconds", timeout.as_secs()))
-    }
-    Err(mpsc::RecvTimeoutError::Disconnected) => {
-      Err("Command wait thread disconnected unexpectedly".to_string())
+  };
+
+  let stdout_bytes = stdout_reader
+    .join()
+    .map_err(|_| "stdout reader thread panicked".to_string())?;
+  let stderr_bytes = stderr_reader
+    .join()
+    .map_err(|_| "stderr reader thread panicked".to_string())?;
+
+  match status {
+    Ok(status) => Ok(CommandOutput {
+      stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+      stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+      status,
+    }),
+    Err(e) => {
+      if stderr_bytes.is_empty() {
+        Err(e)
+      } else {
+        Err(format!(
+          "{e}. stderr: {}",
+          String::from_utf8_lossy(&stderr_bytes).trim()
+        ))
+      }
     }
   }
 }

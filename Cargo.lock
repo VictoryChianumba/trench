@@ -507,6 +507,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "ureq",
 ]
@@ -2169,6 +2170,7 @@ dependencies = [
  "arboard",
  "chrono",
  "crossterm",
+ "dirs 6.0.0",
  "fuzzy-matcher",
  "log",
  "ratatui",

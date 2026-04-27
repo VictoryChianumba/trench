@@ -32,7 +32,7 @@ fn fetch_abstracts(items: &mut Vec<FeedItem>) {
   let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
   let id_list = ids.join(",");
   let url = format!(
-    "http://export.arxiv.org/api/query?id_list={id_list}&max_results=50"
+    "https://export.arxiv.org/api/query?id_list={id_list}&max_results=50"
   );
 
   log::info!(
@@ -41,7 +41,11 @@ fn fetch_abstracts(items: &mut Vec<FeedItem>) {
   );
 
   let body = match crate::http::client().get(&url).send().and_then(|r| {
-    if r.status().is_success() { Ok(r) } else { Err(r.error_for_status().unwrap_err()) }
+    if r.status().is_success() {
+      Ok(r)
+    } else {
+      Err(r.error_for_status().unwrap_err())
+    }
   }) {
     Ok(r) => match crate::http::read_body(r) {
       Ok(b) => b,
@@ -110,8 +114,8 @@ fn parse_abstracts(xml: &str) -> HashMap<String, String> {
         if in_entry && tag == "entry" {
           in_entry = false;
           if let Some(id) = extract_arxiv_id(&entry_id) {
-            let clean = abstract_collapse_whitespace(summary.trim());
-            map.insert(id, abstract_truncate(&clean, 300));
+            let clean = collapse_whitespace(summary.trim());
+            map.insert(id, truncate_chars(&clean, 300));
           }
         }
       }
@@ -138,26 +142,7 @@ fn extract_arxiv_id(url: &str) -> Option<String> {
   if id.is_empty() { None } else { Some(id.to_string()) }
 }
 
-fn abstract_collapse_whitespace(s: &str) -> String {
-  s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn abstract_truncate(s: &str, max: usize) -> String {
-  let mut chars = s.chars();
-  let mut out = String::new();
-  let mut n = 0;
-  for c in &mut chars {
-    if n >= max {
-      if chars.next().is_some() {
-        out.push('…');
-      }
-      break;
-    }
-    out.push(c);
-    n += 1;
-  }
-  out
-}
+use super::{collapse_whitespace, truncate_chars};
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -425,7 +410,6 @@ pub fn fetch_paper_repo(arxiv_id: &str) -> Option<String> {
     return None;
   }
   let body = crate::http::read_body(resp).ok()?;
-  log::debug!("hf api response for {}: {}", arxiv_id, &body);
   let json: serde_json::Value = serde_json::from_str(&body).ok()?;
   json
     .get("githubRepo")

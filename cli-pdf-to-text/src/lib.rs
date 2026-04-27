@@ -21,7 +21,6 @@ pub fn pdf_to_text(
     use std::fs::File;
     use std::io::{self};
     use std::os::fd::AsRawFd;
-    
 
     let stdout = io::stdout();
     original_fd = stdout.as_raw_fd();
@@ -56,11 +55,6 @@ pub fn pdf_to_text(
   #[cfg(not(target_os = "windows"))]
   {
     extern crate libc;
-
-    
-    
-    
-    
 
     unsafe {
       libc::dup2(duplicate_fd, original_fd);

@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::thread;
 
+use super::provider::TtsProvider;
 use super::stream_buffer::{StreamBuffer, StreamWriter};
 
 pub struct ElevenLabsService {
@@ -13,10 +14,7 @@ impl ElevenLabsService {
     Self { api_key, voice_id }
   }
 
-  /// Begin streaming MP3 audio for `text`.  Returns a `StreamBuffer` that
-  /// fills concurrently on a background thread — the caller can start
-  /// decoding as soon as enough bytes have arrived.
-  pub fn stream(&self, text: &str) -> Result<StreamBuffer, String> {
+  fn fetch_audio(&self, text: &str) -> Result<StreamBuffer, String> {
     let url = format!(
       "https://api.elevenlabs.io/v1/text-to-speech/{}/stream",
       self.voice_id
@@ -44,11 +42,14 @@ impl ElevenLabsService {
       })?;
 
     let (buf, writer) = StreamBuffer::new();
-
-    // Fill the buffer from the network on a separate thread
     thread::spawn(move || fill_buffer(response.into_reader(), writer));
-
     Ok(buf)
+  }
+}
+
+impl TtsProvider for ElevenLabsService {
+  fn stream(&self, text: &str) -> Result<StreamBuffer, String> {
+    self.fetch_audio(text)
   }
 }
 

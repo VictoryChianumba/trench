@@ -92,9 +92,8 @@ fn apply_readability(html: &str, url: &str) -> Result<String, String> {
     readability::extractor::extract(&mut html.as_bytes(), &parsed_url)
       .map_err(|e| format!("readability error: {e}"))?;
   log::debug!(
-    "fulltext: readability product.content={} bytes, preview={:?}",
-    product.content.len(),
-    product.content.chars().take(200).collect::<String>()
+    "fulltext: readability extracted {} bytes of article content",
+    product.content.len()
   );
   let text = strip_html(&product.content);
   if text.trim().is_empty() {
@@ -191,12 +190,14 @@ fn chromium_fetch(url: &str) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 fn get_text(url: &str) -> Result<String, String> {
-  let resp =
-    reqwest::blocking::get(url).map_err(|e| format!("HTTP error: {e}"))?;
+  let resp = crate::http::client()
+    .get(url)
+    .send()
+    .map_err(|e| format!("HTTP error: {e}"))?;
   if !resp.status().is_success() {
     return Err(format!("HTTP {}", resp.status()));
   }
-  resp.text().map_err(|e| format!("Body read error: {e}"))
+  crate::http::read_body(resp).map_err(|e| format!("Body read error: {e}"))
 }
 
 // ---------------------------------------------------------------------------

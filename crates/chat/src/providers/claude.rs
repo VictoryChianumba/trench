@@ -5,16 +5,38 @@ use serde_json::{Value, json};
 use crate::provider::{ChatProvider, ProviderResponse};
 use crate::{ChatMessage, Role};
 
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+
+fn read_body(resp: reqwest::blocking::Response) -> anyhow::Result<String> {
+  use std::io::Read;
+  let mut buf = Vec::new();
+  resp
+    .take(MAX_RESPONSE_BYTES + 1)
+    .read_to_end(&mut buf)
+    .map_err(|e| anyhow::anyhow!("body read error: {e}"))?;
+  if buf.len() as u64 > MAX_RESPONSE_BYTES {
+    anyhow::bail!("response body exceeds 4 MB limit");
+  }
+  String::from_utf8(buf).map_err(|e| anyhow::anyhow!("body encoding: {e}"))
+}
+
 pub struct ClaudeProvider {
   pub api_key: String,
   pub model: String,
+  client: reqwest::blocking::Client,
 }
 
 impl ClaudeProvider {
   pub fn new(api_key: impl Into<String>) -> Self {
     Self {
       api_key: api_key.into(),
-      model: "claude-sonnet-4-20250514".to_string(),
+      model: DEFAULT_MODEL.to_string(),
+      client: reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client"),
     }
   }
 
@@ -22,7 +44,14 @@ impl ClaudeProvider {
     api_key: impl Into<String>,
     model: impl Into<String>,
   ) -> Self {
-    Self { api_key: api_key.into(), model: model.into() }
+    Self {
+      api_key: api_key.into(),
+      model: model.into(),
+      client: reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client"),
+    }
   }
 }
 
@@ -86,8 +115,8 @@ impl ChatProvider for ClaudeProvider {
       body["system"] = json!(system_text);
     }
 
-    let client = reqwest::blocking::Client::new();
-    let resp = client
+    let resp = self
+      .client
       .post("https://api.anthropic.com/v1/messages")
       .header("x-api-key", &self.api_key)
       .header("anthropic-version", "2023-06-01")
@@ -96,7 +125,7 @@ impl ChatProvider for ClaudeProvider {
       .send()?;
 
     let status = resp.status();
-    let text = resp.text()?;
+    let text = read_body(resp)?;
 
     if !status.is_success() {
       let friendly = friendly_error(status.as_u16(), &text);

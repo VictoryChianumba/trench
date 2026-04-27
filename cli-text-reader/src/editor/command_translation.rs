@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct ParsedCommand {
@@ -276,7 +275,10 @@ mod tests {
   fn test_grep_injection_resistance() {
     // A pattern containing `"` must not break out of the PS string
     let result = translate_command_for_windows(r#"grep foo"bar file.txt"#);
-    assert!(result.contains(r#"foo""bar"#), "double-quote not escaped: {result}");
+    assert!(
+      result.contains(r#"foo""bar"#),
+      "double-quote not escaped: {result}"
+    );
     // A pattern containing `$` must not be expanded by PS
     let result = translate_command_for_windows("grep $HOME file.txt");
     assert!(result.contains("`$HOME"), "dollar not escaped: {result}");

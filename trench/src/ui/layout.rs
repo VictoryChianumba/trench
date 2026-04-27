@@ -156,6 +156,16 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
       chat_ui.draw_overlay(frame, area);
     }
   }
+
+  // A1 — floating reader popup (Ldr+Enter).
+  if app.reader_popup_active {
+    draw_reader_popup(frame, app, area);
+  }
+
+  // A2 State 3 — bottom pane always visible when dual-reader active.
+  if app.reader_dual_active {
+    draw_reader_bottom_pane(frame, app, area);
+  }
 }
 
 // ── Title bar ──────────────────────────────────────────────────────────────
@@ -297,6 +307,52 @@ struct MainRowRects {
 }
 
 fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
+  // ── A2 State 3: dual-reader (left 50% | right 50%) ──────────────────────
+  if app.reader_dual_active && app.reader_active {
+    let inner_w = area.width.saturating_sub(2);
+    let right_w = (inner_w / 2).max(1);
+    let (left_rect, right_rect) =
+      draw_horiz_split_box(frame, area, right_w, "Reader", "Reader");
+    if let Some(editor) = app.reader.as_mut() {
+      editor.update_layout(left_rect);
+      cli_text_reader::draw_editor(frame, left_rect, editor);
+    }
+    if let Some(editor) = app.reader_secondary.as_mut() {
+      editor.update_layout(right_rect);
+      cli_text_reader::draw_editor(frame, right_rect, editor);
+    } else {
+      let hint = Paragraph::new("No paper loaded\n\nLdr+v → open feed · Enter to load")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme::TEXT_DIM));
+      frame.render_widget(hint, right_rect);
+    }
+    return MainRowRects {
+      feed: None,
+      reader: Some(left_rect),
+      notes: None,
+      details: None,
+    };
+  }
+
+  // ── A2 State 2: feed (40%) | reader (60%) ────────────────────────────────
+  if app.reader_split_active && app.reader_active {
+    let inner_w = area.width.saturating_sub(2);
+    let reader_w = (inner_w * 60 / 100).max(1);
+    let (feed_rect, reader_rect) =
+      draw_horiz_split_box(frame, area, reader_w, "Feed", "Reader");
+    draw_feed_pane(frame, app, feed_rect);
+    if let Some(editor) = app.reader.as_mut() {
+      editor.update_layout(reader_rect);
+      cli_text_reader::draw_editor(frame, reader_rect, editor);
+    }
+    return MainRowRects {
+      feed: Some(feed_rect),
+      reader: Some(reader_rect),
+      notes: None,
+      details: None,
+    };
+  }
+
   // ── Reader: always full-width or 60/40 split, regardless of terminal width ─
   if app.reader_active && !app.notes_active {
     if let Some(editor) = app.reader.as_mut() {
@@ -437,7 +493,62 @@ fn draw_feed_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     .constraints([Constraint::Length(1), Constraint::Min(0)])
     .split(area);
   draw_feed_tab_bar(frame, app, rows[0]);
-  draw_item_table(frame, app, rows[1]);
+  // Narrow pane: switch to title-only list to avoid squished columns.
+  if area.width < 70 {
+    draw_narrow_feed(frame, app, rows[1]);
+  } else {
+    draw_item_table(frame, app, rows[1]);
+  }
+}
+
+fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
+  let viewport_rows = area.height as usize;
+  let selected = app.active_selected_index();
+
+  // Count in a scoped borrow so offset can be mutated without holding a ref.
+  let total = { app.visible_items().len() };
+
+  let mut offset = app.active_list_offset();
+  if selected < offset {
+    offset = selected;
+  } else if selected >= offset + viewport_rows {
+    offset = selected + 1 - viewport_rows;
+  }
+  offset = offset.min(total.saturating_sub(1));
+  app.set_active_list_offset(offset);
+
+  let visible = app.visible_items();
+  let title_w = area.width.saturating_sub(2) as usize;
+  let mut y = area.y;
+  for (abs_i, item) in visible.iter().enumerate().skip(offset) {
+    if y >= area.y + area.height {
+      break;
+    }
+    let is_selected = abs_i == selected;
+    let wrapped = textwrap::wrap(&item.title, title_w.max(10));
+    let line_count = wrapped.len().min(2);
+    for (li, line) in wrapped.iter().take(line_count).enumerate() {
+      if y >= area.y + area.height {
+        break;
+      }
+      let prefix = if li == 0 {
+        if is_selected { "▶ " } else { "  " }
+      } else {
+        "  "
+      };
+      let style = if is_selected {
+        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
+      } else {
+        Style::default().fg(theme::TEXT_DIM)
+      };
+      let row_rect = Rect { x: area.x, y, width: area.width, height: 1 };
+      frame.render_widget(
+        Paragraph::new(format!("{prefix}{line}")).style(style),
+        row_rect,
+      );
+      y += 1;
+    }
+  }
 }
 
 fn draw_feed_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -1183,6 +1294,126 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     gray,
   ));
   frame.render_widget(Paragraph::new(vec![hint_line]), rows[1]);
+}
+
+// ── A1: floating reader popup (Ldr+Enter) ─────────────────────────────────
+
+fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
+  // Small bottom-center popup: ~20% of height, ~60% of width.
+  let popup_w = (area.width as u32 * 60 / 100) as u16;
+  let popup_h = ((area.height as u32 * 20 / 100) as u16).max(8);
+  let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+  let popup_y = area.y + area.height.saturating_sub(popup_h);
+  let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+  frame.render_widget(Clear, popup_rect);
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(theme::BORDER_ACTIVE))
+    .title(Span::styled(
+      " Reader · Esc to close ",
+      Style::default().fg(theme::TEXT_DIM),
+    ));
+
+  let inner = block.inner(popup_rect);
+  frame.render_widget(block, popup_rect);
+
+  if let Some(editor) = app.reader.as_mut() {
+    editor.update_layout(inner);
+    cli_text_reader::draw_editor(frame, inner, editor);
+  }
+}
+
+// ── A2 State 3: persistent bottom pane (feed list or details) ─────────────
+
+fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
+  const POPUP_H: u16 = 11; // border(2) + hint row(1) + sep(1) + content(7)
+  let popup_w = (area.width as u32 * 60 / 100) as u16;
+  let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+  let popup_y = area.y + area.height.saturating_sub(POPUP_H);
+  let popup_rect = Rect::new(popup_x, popup_y, popup_w, POPUP_H);
+
+  frame.render_widget(Clear, popup_rect);
+
+  let focused = app.reader_bottom_focused;
+  let border_color =
+    if focused { theme::BORDER_ACTIVE } else { theme::BORDER };
+
+  let title_str = if app.reader_bottom_details {
+    " Details · d: back  j/k: scroll  Esc: back "
+  } else {
+    " Feed · j/k: navigate  Enter: open  d: details  q: close "
+  };
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(border_color))
+    .title(Span::styled(title_str, Style::default().fg(theme::TEXT_DIM)));
+
+  let inner = block.inner(popup_rect);
+  frame.render_widget(block, popup_rect);
+
+  if inner.height == 0 {
+    return;
+  }
+
+  if app.reader_bottom_details {
+    draw_bottom_pane_details(frame, app, inner);
+  } else {
+    draw_bottom_pane_feed(frame, app, inner);
+  }
+}
+
+fn draw_bottom_pane_details(frame: &mut Frame, app: &App, area: Rect) {
+  let sel = app.reader_feed_popup_selected;
+  let items = app.items_for_tab();
+  let Some(item) = items.get(sel) else { return };
+
+  let scroll = app.reader_bottom_scroll;
+  let text = format!("{}\n\n{}", item.title, item.summary_short);
+  let para = Paragraph::new(text)
+    .wrap(ratatui::widgets::Wrap { trim: false })
+    .scroll((scroll as u16, 0))
+    .style(Style::default().fg(theme::TEXT_DIM));
+  frame.render_widget(para, area);
+}
+
+fn draw_bottom_pane_feed(frame: &mut Frame, app: &App, area: Rect) {
+  let items = app.items_for_tab();
+  let sel = app.reader_feed_popup_selected;
+  let max_visible = area.height as usize;
+
+  // Auto-scroll offset to keep selection visible.
+  let offset = if sel >= max_visible { sel - max_visible + 1 } else { 0 };
+
+  let mut lines: Vec<Line> = Vec::new();
+  for (i, item) in items.iter().enumerate().skip(offset).take(max_visible) {
+    let is_selected = i == sel;
+    let title_w = area.width.saturating_sub(2) as usize;
+    let title = truncate_str(&item.title, title_w);
+    if is_selected {
+      lines.push(Line::from(Span::styled(
+        format!("▶ {title}"),
+        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+      )));
+    } else {
+      lines.push(Line::from(Span::styled(
+        format!("  {title}"),
+        Style::default().fg(theme::TEXT_DIM),
+      )));
+    }
+  }
+
+  frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+  let chars: Vec<char> = s.chars().collect();
+  if chars.len() <= max {
+    s.to_string()
+  } else {
+    chars[..max.saturating_sub(1)].iter().collect::<String>() + "…"
+  }
 }
 
 // ── Sources popup ──────────────────────────────────────────────────────────

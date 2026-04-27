@@ -133,14 +133,10 @@ impl Editor {
       last_saved_viewport_offset: 0,
       cursor_currently_visible: true,
       buffer_just_switched: false,
-      // Voice / TTS — initialise from config if a key is configured
+      // Voice / TTS — always available; provider selected from config
       voice_controller: {
         let cfg = crate::config::load_config();
-        if cfg.elevenlabs_api_key.is_empty() {
-          None
-        } else {
-          Some(PlaybackController::new(cfg.elevenlabs_api_key, cfg.voice_id))
-        }
+        Some(PlaybackController::new(crate::voice::make_provider(&cfg)))
       },
       voice_status: PlaybackStatus::Idle,
       voice_error: None,
