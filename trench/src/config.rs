@@ -93,20 +93,16 @@ impl Config {
       let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_vec_pretty(self) {
-      let _ = std::fs::write(&path, &json);
-      log::debug!(
-        "config: wrote {} — contents:\n{}",
-        path.display(),
-        String::from_utf8_lossy(&json)
-      );
+      if let Err(e) = std::fs::write(&path, &json) {
+        log::error!("config: failed to write {}: {e}", path.display());
+      } else {
+        crate::store::set_private(&path);
+        log::debug!("config: wrote {}", path.display());
+      }
     }
   }
 }
 
 fn config_path() -> Option<PathBuf> {
-  let mut p = std::env::var_os("HOME").map(PathBuf::from)?;
-  p.push(".config");
-  p.push("trench");
-  p.push("config.json");
-  Some(p)
+  Some(dirs::home_dir()?.join(".config/trench/config.json"))
 }

@@ -1,7 +1,4 @@
-use crossterm::{
-  QueueableCommand, execute,
-  style::SetBackgroundColor,
-};
+use crossterm::{QueueableCommand, execute, style::SetBackgroundColor};
 use std::io::{self, Result as IoResult, Write};
 
 use super::core::Editor;

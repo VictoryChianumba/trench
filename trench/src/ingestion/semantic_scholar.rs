@@ -74,22 +74,25 @@ pub fn enrich(
       "https://api.semanticscholar.org/graph/v1/paper/arXiv:{}?fields=authors,citationCount,fieldsOfStudy",
       id
     );
+    // Pace before each request; no leading delay on the first.
+    if request_count > 0 {
+      std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
     log::debug!("semantic_scholar: network request for arXiv:{id}");
     request_count += 1;
     let entry = match fetch_entry(&client, &api_url, &id, api_key) {
-      Some(e) => e,
-      None => {
+      Ok(Some(e)) => e,
+      Ok(None) => {
         skipped += 1;
         continue;
       }
+      Err(()) => break,
     };
 
     apply_entry(item, &entry);
     enriched += 1;
     cache.insert(id, entry);
-
-    // Stay within the free-tier rate limit.
-    std::thread::sleep(std::time::Duration::from_millis(100));
   }
 
   log::info!("semantic_scholar: enriched {enriched} items, skipped {skipped}");
@@ -116,7 +119,7 @@ fn fetch_entry(
   url: &str,
   id: &str,
   api_key: Option<&str>,
-) -> Option<EnrichmentEntry> {
+) -> Result<Option<EnrichmentEntry>, ()> {
   let mut builder = client.get(url);
   if let Some(key) = api_key {
     builder = builder.header("x-api-key", key);
@@ -125,9 +128,14 @@ fn fetch_entry(
     Ok(r) => r,
     Err(e) => {
       log::warn!("semantic_scholar: request failed for arXiv:{id} — {e}");
-      return None;
+      return Ok(None);
     }
   };
+
+  if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    log::warn!("semantic_scholar: rate limited (429) for arXiv:{id} — stopping enrichment run");
+    return Err(());
+  }
 
   let body = match crate::http::read_body(resp) {
     Ok(b) => b,
@@ -135,7 +143,7 @@ fn fetch_entry(
       log::warn!(
         "semantic_scholar: failed to read response body for arXiv:{id} — {e}"
       );
-      return None;
+      return Ok(None);
     }
   };
 
@@ -143,7 +151,7 @@ fn fetch_entry(
     Ok(v) => v,
     Err(e) => {
       log::warn!("semantic_scholar: JSON parse error for arXiv:{id} — {e}");
-      return None;
+      return Ok(None);
     }
   };
 
@@ -157,7 +165,7 @@ fn fetch_entry(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
     );
-    return None;
+    return Ok(None);
   }
 
   let empty_vec = vec![];
@@ -184,7 +192,8 @@ fn fetch_entry(
     log::warn!("semantic_scholar: no institution in response for arXiv:{id}");
   }
 
-  let citation_count = json["citationCount"].as_u64().unwrap_or(0) as u32;
+  let citation_count =
+    json["citationCount"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
 
   let fields_of_study: Vec<String> = json["fieldsOfStudy"]
     .as_array()
@@ -193,12 +202,11 @@ fn fetch_entry(
     .filter_map(|f| f["category"].as_str().map(|s| s.to_string()))
     .collect();
 
-  Some(EnrichmentEntry {
+  Ok(Some(EnrichmentEntry {
     authors,
     institution,
     citation_count,
     fields_of_study,
     cached_at: today_str(),
-  })
+  }))
 }
-

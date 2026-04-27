@@ -17,13 +17,15 @@ pub fn fetch(categories: &[String]) -> Result<Vec<FeedItem>, String> {
       .join("+OR+")
   };
   let url = format!(
-    "http://export.arxiv.org/api/query\
+    "https://export.arxiv.org/api/query\
      ?search_query={query}\
      &sortBy=submittedDate&sortOrder=descending&max_results=50"
   );
-  let body = reqwest::blocking::get(&url)
-    .map_err(|e| format!("HTTP request failed: {e}"))?
-    .text()
+  let resp = crate::http::client()
+    .get(&url)
+    .send()
+    .map_err(|e| format!("HTTP request failed: {e}"))?;
+  let body = crate::http::read_body(resp)
     .map_err(|e| format!("Failed to read response body: {e}"))?;
 
   parse_atom(&body)
@@ -36,14 +38,16 @@ pub fn search_query(
 ) -> Result<Vec<FeedItem>, String> {
   let encoded = encode_arxiv_query(query);
   let url = format!(
-    "http://export.arxiv.org/api/query\
+    "https://export.arxiv.org/api/query\
      ?search_query=all:{encoded}\
      &sortBy=submittedDate&sortOrder=descending&max_results={}",
     max_results.min(100)
   );
-  let body = reqwest::blocking::get(&url)
-    .map_err(|e| format!("HTTP request failed: {e}"))?
-    .text()
+  let resp = crate::http::client()
+    .get(&url)
+    .send()
+    .map_err(|e| format!("HTTP request failed: {e}"))?;
+  let body = crate::http::read_body(resp)
     .map_err(|e| format!("Failed to read response body: {e}"))?;
 
   parse_atom(&body)
@@ -59,12 +63,14 @@ pub fn fetch_by_ids(ids: &[String]) -> Result<Vec<FeedItem>, String> {
 
   let id_list = normalized.join(",");
   let url = format!(
-    "http://export.arxiv.org/api/query?id_list={id_list}&max_results={}",
+    "https://export.arxiv.org/api/query?id_list={id_list}&max_results={}",
     normalized.len().min(100)
   );
-  let body = reqwest::blocking::get(&url)
-    .map_err(|e| format!("HTTP request failed: {e}"))?
-    .text()
+  let resp = crate::http::client()
+    .get(&url)
+    .send()
+    .map_err(|e| format!("HTTP request failed: {e}"))?;
+  let body = crate::http::read_body(resp)
     .map_err(|e| format!("Failed to read response body: {e}"))?;
 
   parse_atom(&body)
@@ -236,26 +242,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
   Ok(items)
 }
 
-fn collapse_whitespace(s: &str) -> String {
-  s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn truncate_chars(s: &str, max: usize) -> String {
-  let mut chars = s.chars();
-  let mut out = String::new();
-  let mut n = 0;
-  for c in &mut chars {
-    if n >= max {
-      if chars.next().is_some() {
-        out.push('…');
-      }
-      break;
-    }
-    out.push(c);
-    n += 1;
-  }
-  out
-}
+use super::{collapse_whitespace, truncate_chars};
 
 fn encode_arxiv_query(query: &str) -> String {
   query

@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{
-  VoicePlayingInfo, chunk_paragraphs, elevenlabs::ElevenLabsService,
-};
+use super::{VoicePlayingInfo, chunk_paragraphs, provider::TtsProvider};
 
 pub enum PlaybackCommand {
   Start { text: String, doc_start_line: usize, doc_end_line: usize },
@@ -30,7 +28,7 @@ pub struct PlaybackController {
 }
 
 impl PlaybackController {
-  pub fn new(api_key: String, voice_id: String) -> Self {
+  pub fn new(provider: Box<dyn TtsProvider>) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::channel::<PlaybackCommand>();
     let status = Arc::new(Mutex::new(PlaybackStatus::Idle));
     let voice_error = Arc::new(Mutex::new(None::<String>));
@@ -41,14 +39,7 @@ impl PlaybackController {
     let info_clone = Arc::clone(&playing_info);
 
     thread::spawn(move || {
-      playback_loop(
-        api_key,
-        voice_id,
-        cmd_rx,
-        status_clone,
-        error_clone,
-        info_clone,
-      );
+      playback_loop(provider, cmd_rx, status_clone, error_clone, info_clone);
     });
 
     Self { cmd_tx, status, voice_error, playing_info }
@@ -94,15 +85,12 @@ impl PlaybackController {
 // ---------------------------------------------------------------------------
 
 fn playback_loop(
-  api_key: String,
-  voice_id: String,
+  provider: Box<dyn TtsProvider>,
   cmd_rx: Receiver<PlaybackCommand>,
   status: Arc<Mutex<PlaybackStatus>>,
   error: Arc<Mutex<Option<String>>>,
   playing_info: Arc<Mutex<Option<VoicePlayingInfo>>>,
 ) {
-  let service = ElevenLabsService::new(api_key, voice_id);
-
   let (_stream, handle) = match rodio::OutputStream::try_default() {
     Ok(r) => r,
     Err(e) => {
@@ -122,12 +110,11 @@ fn playback_loop(
             continue;
           }
         };
-        // Status stays Loading until the first audio chunk is ready to play.
         let mut was_stopped = false;
         let mut chars_before: usize = 0;
 
         'chunks: for chunk_text in chunk_paragraphs(&text) {
-          // Check for interrupt before starting the next network request
+          // Check for interrupt before starting the next synthesis request
           while let Ok(interrupt) = cmd_rx.try_recv() {
             match interrupt {
               PlaybackCommand::Stop => {
@@ -143,15 +130,13 @@ fn playback_loop(
                 *status.lock().unwrap() = PlaybackStatus::Playing;
               }
               PlaybackCommand::Start { .. } => {
-                // New start while fetching — treat as stop; outer loop handles
                 was_stopped = true;
                 break 'chunks;
               }
             }
           }
 
-          // Start streaming this chunk — returns immediately, fills on bg thread
-          let buf = match service.stream(&chunk_text) {
+          let buf = match provider.stream(&chunk_text) {
             Err(msg) => {
               *error.lock().unwrap() = Some(msg);
               was_stopped = true;
@@ -160,19 +145,16 @@ fn playback_loop(
             Ok(b) => b,
           };
 
-          // Wait for enough bytes for the decoder to parse the MP3 header
-          const PRE_BUFFER: usize = 16 * 1024; // ~0.5 s at 256 kbps
+          // Wait for enough bytes for the decoder to parse the audio header
+          const PRE_BUFFER: usize = 16 * 1024;
           loop {
             if buf.buffered_len() >= PRE_BUFFER || buf.is_done() {
               break;
             }
             if let Ok(interrupt) = cmd_rx.try_recv() {
-              match interrupt {
-                PlaybackCommand::Stop => {
-                  was_stopped = true;
-                  break 'chunks;
-                }
-                _ => {}
+              if matches!(interrupt, PlaybackCommand::Stop) {
+                was_stopped = true;
+                break 'chunks;
               }
             }
             thread::sleep(Duration::from_millis(20));
@@ -181,14 +163,12 @@ fn playback_loop(
           let chunk_len = chunk_text.len();
           match rodio::Decoder::new(buf) {
             Ok(source) => {
-              // Record when this chunk starts playing and how many chars precede it
               *playing_info.lock().unwrap() = Some(VoicePlayingInfo {
                 doc_start_line,
                 doc_end_line,
                 started_at: Instant::now(),
                 chars_before_chunk: chars_before,
               });
-              // Decoder started — audio now streams into the sink.
               *status.lock().unwrap() = PlaybackStatus::Playing;
               sink.append(source);
             }
@@ -210,7 +190,6 @@ fn playback_loop(
                 PlaybackCommand::Pause => {
                   sink.pause();
                   *status.lock().unwrap() = PlaybackStatus::Paused;
-                  // Block until Resume or Stop arrives
                   'paused: for pcmd in cmd_rx.iter() {
                     match pcmd {
                       PlaybackCommand::Resume => {
@@ -226,11 +205,11 @@ fn playback_loop(
                         was_stopped = true;
                         break 'chunks;
                       }
-                      PlaybackCommand::Pause => {} // already paused
+                      PlaybackCommand::Pause => {}
                     }
                   }
                 }
-                PlaybackCommand::Resume => {} // already playing
+                PlaybackCommand::Resume => {}
                 PlaybackCommand::Start { .. } => {
                   was_stopped = true;
                   break 'chunks;
@@ -243,7 +222,7 @@ fn playback_loop(
           chars_before += chunk_len;
         }
 
-        let _ = was_stopped; // silence unused warning
+        let _ = was_stopped;
         *playing_info.lock().unwrap() = None;
         *status.lock().unwrap() = PlaybackStatus::Idle;
       }
@@ -253,9 +232,7 @@ fn playback_loop(
         *playing_info.lock().unwrap() = None;
         *status.lock().unwrap() = PlaybackStatus::Idle;
       }
-      PlaybackCommand::Pause | PlaybackCommand::Resume => {
-        // No active session — ignore
-      }
+      PlaybackCommand::Pause | PlaybackCommand::Resume => {}
     }
   }
 }

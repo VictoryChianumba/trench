@@ -16,6 +16,11 @@ pub struct AppConfig {
   pub elevenlabs_api_key: String,
   pub voice_id: String,
   pub playback_speed: f32,
+  /// "elevenlabs" | "say" | "piper" — empty means auto-select
+  pub tts_provider: String,
+  pub say_voice: String,
+  pub piper_binary: String,
+  pub piper_model: String,
 }
 
 fn get_config_env_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -50,6 +55,13 @@ pub fn load_config() -> AppConfig {
       .ok()
       .and_then(|v| v.parse().ok())
       .unwrap_or(1.0);
+    config.tts_provider =
+      std::env::var("TTS_PROVIDER").unwrap_or_default();
+    config.say_voice = std::env::var("SAY_VOICE").unwrap_or_default();
+    config.piper_binary =
+      std::env::var("PIPER_BINARY").unwrap_or_default();
+    config.piper_model =
+      std::env::var("PIPER_MODEL").unwrap_or_default();
   }
 
   config
@@ -67,7 +79,8 @@ fn read_raw_config() -> std::collections::HashMap<String, String> {
     Ok(t) => t,
     Err(_) => return Default::default(),
   };
-  text.lines()
+  text
+    .lines()
     .filter_map(|line| {
       let line = line.trim();
       if line.starts_with('#') || !line.contains('=') {
@@ -95,22 +108,23 @@ pub fn save_config(
       .and_then(|v| crate::utils::parse_bool_env_var_from_str(v))
       .unwrap_or(default)
   };
-  let existing_str = |key: &str| -> String {
-    existing.get(key).cloned().unwrap_or_default()
-  };
+  let existing_str =
+    |key: &str| -> String { existing.get(key).cloned().unwrap_or_default() };
   let existing_f32 = |key: &str, default: f32| -> f32 {
     existing.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
   };
 
-  let enable_tutorial =
-    config.enable_tutorial.unwrap_or_else(|| existing_bool("ENABLE_TUTORIAL", true));
+  let enable_tutorial = config
+    .enable_tutorial
+    .unwrap_or_else(|| existing_bool("ENABLE_TUTORIAL", true));
   let enable_line_highlighter = config
     .enable_line_highlighter
     .unwrap_or_else(|| existing_bool("ENABLE_LINE_HIGHLIGHTER", true));
   let show_cursor =
     config.show_cursor.unwrap_or_else(|| existing_bool("SHOW_CURSOR", true));
-  let show_progress =
-    config.show_progress.unwrap_or_else(|| existing_bool("SHOW_PROGRESS", true));
+  let show_progress = config
+    .show_progress
+    .unwrap_or_else(|| existing_bool("SHOW_PROGRESS", true));
   let tutorial_shown = config
     .tutorial_shown
     .unwrap_or_else(|| existing_bool("TUTORIAL_SHOWN", false));
@@ -119,8 +133,11 @@ pub fn save_config(
   } else {
     config.elevenlabs_api_key.clone()
   };
-  let voice_id =
-    if config.voice_id.is_empty() { existing_str("VOICE_ID") } else { config.voice_id.clone() };
+  let voice_id = if config.voice_id.is_empty() {
+    existing_str("VOICE_ID")
+  } else {
+    config.voice_id.clone()
+  };
   let playback_speed = if config.playback_speed == 0.0 {
     existing_f32("PLAYBACK_SPEED", 1.0)
   } else {
@@ -135,7 +152,8 @@ pub fn save_config(
   #[cfg(unix)]
   {
     use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
+    let _ =
+      fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
   }
   Ok(())
 }

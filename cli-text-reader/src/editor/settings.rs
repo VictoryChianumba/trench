@@ -47,15 +47,11 @@ impl Editor {
     };
     let _ = save_config(&config);
 
-    // Reload voice controller with new credentials
-    let api_key = self.settings_fields[0].clone();
-    let voice_id = self.settings_fields[1].clone();
-    if api_key.is_empty() {
-      self.voice_controller = None;
-    } else {
-      use crate::voice::playback::PlaybackController;
-      self.voice_controller = Some(PlaybackController::new(api_key, voice_id));
-    }
+    // Rebuild voice controller from updated config
+    let updated_cfg = load_config();
+    use crate::voice::playback::PlaybackController;
+    self.voice_controller =
+      Some(PlaybackController::new(crate::voice::make_provider(&updated_cfg)));
 
     self.settings_saved_until =
       Some(std::time::Instant::now() + std::time::Duration::from_secs(2));

@@ -17,9 +17,7 @@ pub fn client() -> reqwest::blocking::Client {
 pub fn read_body(resp: reqwest::blocking::Response) -> Result<String, String> {
   let mut limited = resp.take(MAX_BODY_BYTES + 1);
   let mut buf = Vec::new();
-  limited
-    .read_to_end(&mut buf)
-    .map_err(|e| format!("body read error: {e}"))?;
+  limited.read_to_end(&mut buf).map_err(|e| format!("body read error: {e}"))?;
   if buf.len() as u64 > MAX_BODY_BYTES {
     return Err(format!(
       "response body exceeds {} MB limit",

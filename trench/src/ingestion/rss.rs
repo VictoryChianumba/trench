@@ -281,25 +281,37 @@ fn parse_feed(
 
 /// Strip namespace prefix: "dc:creator" → "creator".
 fn local_name(raw: &[u8]) -> String {
-  let s = std::str::from_utf8(raw).unwrap_or("");
+  let s = match std::str::from_utf8(raw) {
+    Ok(s) => s,
+    Err(_) => {
+      log::warn!("rss: malformed UTF-8 in tag name ({} bytes)", raw.len());
+      return String::new();
+    }
+  };
   match s.rfind(':') {
     Some(pos) => s[pos + 1..].to_string(),
     None => s.to_string(),
   }
 }
 
-fn collapse_whitespace(s: &str) -> String {
-  s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+use super::{collapse_whitespace, truncate_chars};
 
-/// Remove HTML tags, replacing closing block tags with a space.
+/// Remove HTML tags, replacing them with a space.
+///
+/// Bare `<` not followed by `/`, `!`, or an ASCII letter is treated as a literal
+/// character so that text like `a < b` is preserved rather than swallowed.
 fn strip_html(s: &str) -> String {
   let mut out = String::with_capacity(s.len());
   let mut in_tag = false;
-  for c in s.chars() {
+  let mut chars = s.chars().peekable();
+  while let Some(c) = chars.next() {
     match c {
-      '<' => in_tag = true,
-      '>' => {
+      '<' => match chars.peek() {
+        Some(&'/') | Some(&'!') => in_tag = true,
+        Some(&c2) if c2.is_ascii_alphabetic() => in_tag = true,
+        _ => out.push('<'),
+      },
+      '>' if in_tag => {
         in_tag = false;
         out.push(' ');
       }
@@ -310,30 +322,13 @@ fn strip_html(s: &str) -> String {
   out
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-  let mut chars = s.chars();
-  let mut out = String::new();
-  let mut n = 0;
-  for c in &mut chars {
-    if n >= max {
-      if chars.next().is_some() {
-        out.push('…');
-      }
-      break;
-    }
-    out.push(c);
-    n += 1;
-  }
-  out
-}
-
 /// Normalise various date formats to YYYY-MM-DD.
 ///
 /// Handles:
 /// - ISO 8601 / Atom: `2026-03-15T00:00:00Z` → `2026-03-15`
 /// - RFC 2822 / RSS:  `Mon, 15 Mar 2026 00:00:00 GMT` → `2026-03-15`
-fn normalise_date(s: &str) -> String {
-  let s = s.trim();
+fn normalise_date(raw: &str) -> String {
+  let s = raw.trim();
   if s.is_empty() {
     return String::new();
   }
@@ -349,10 +344,12 @@ fn normalise_date(s: &str) -> String {
   // Expect: DD Mon YYYY ...
   let parts: Vec<&str> = s.split_whitespace().collect();
   if parts.len() < 3 {
+    log::warn!("rss: unrecognised date format — {raw:?}");
     return String::new();
   }
   let day_n: u32 = parts[0].parse().unwrap_or(0);
   if day_n == 0 {
+    log::warn!("rss: unrecognised date format — {raw:?}");
     return String::new();
   }
   let month = match parts[1] {
@@ -368,7 +365,10 @@ fn normalise_date(s: &str) -> String {
     "Oct" => "10",
     "Nov" => "11",
     "Dec" => "12",
-    _ => return String::new(),
+    _ => {
+      log::warn!("rss: unrecognised date format — {raw:?}");
+      return String::new();
+    }
   };
   let year = parts[2];
   format!("{year}-{month}-{day_n:02}")

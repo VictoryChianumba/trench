@@ -73,7 +73,8 @@ impl Editor {
           "  View files:  cat less more head tail file stat wc nl".to_string(),
           "  Navigate:    ls pwd find locate which whereis".to_string(),
           "  Text:        grep awk sed sort uniq cut tr fmt fold".to_string(),
-          "  System:      date uptime whoami id uname hostname df free ps".to_string(),
+          "  System:      date uptime whoami id uname hostname df free ps"
+            .to_string(),
           "  Paths:       basename dirname realpath readlink".to_string(),
         ];
         self.create_horizontal_split(cmd, error_lines);

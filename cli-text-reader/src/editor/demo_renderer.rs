@@ -3,10 +3,7 @@ use crossterm::{
   QueueableCommand,
   cursor::MoveTo,
   execute,
-  style::{
-    Color, Print, ResetColor, SetBackgroundColor,
-    SetForegroundColor,
-  },
+  style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
 };
 use std::io::Write;
 
