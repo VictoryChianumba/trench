@@ -10,8 +10,8 @@ use crate::models::WorkflowState;
 
 use super::{
   do_refresh, force_refresh, get_pane_by_number, kbd_scroll_ok, open_url,
-  spawn_discovery, spawn_fulltext_fetch, spawn_repo_dir, spawn_repo_file,
-  spawn_repo_open, truncate_for_notif,
+  spawn_ai_discovery, spawn_discovery, spawn_fulltext_fetch, spawn_repo_dir,
+  spawn_repo_file, spawn_repo_open, truncate_for_notif,
 };
 
 /// Top-level key dispatcher — called once per key press event from the main loop.
@@ -29,8 +29,8 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
     return;
   }
 
-  // State-3 bottom pane (A2) — handles its own key set when focused.
-  if app.reader_dual_active && app.reader_bottom_focused {
+  // State-3 bottom pane (A2) — handles its own key set when open and focused.
+  if app.reader_dual_active && app.reader_bottom_open && app.reader_bottom_focused {
     handle_reader_bottom_pane(key, app);
     return;
   }
@@ -302,15 +302,22 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         }
       }
     }
-    // A2 — three-state split cycle
+    // A2 — three-state split cycle / bottom pane toggle
     KeyCode::Char('v') => {
       if app.reader_dual_active {
-        // State 3 → State 2
-        app.reader_dual_active = false;
-        app.reader_bottom_focused = false;
-        app.reader_secondary = None;
-        app.focused_reader = FocusedReader::Primary;
-        app.focused_pane = PaneId::Reader;
+        // State 3: toggle bottom feed pane.
+        if app.reader_bottom_open {
+          app.reader_bottom_open = false;
+          app.reader_bottom_focused = false;
+          app.reader_bottom_details = false;
+          if app.focused_pane == PaneId::Feed {
+            app.focused_pane = PaneId::Reader;
+          }
+        } else {
+          app.reader_bottom_open = true;
+          app.reader_bottom_focused = true;
+          app.reader_bottom_details = false;
+        }
       } else if app.reader_split_active {
         // State 2 → State 3: auto-fetch selected item into right pane
         app.reader_dual_active = true;
@@ -419,6 +426,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       PaneId::SecondaryReader => {
         // Close secondary reader, step back to State 2.
         app.reader_dual_active = false;
+        app.reader_bottom_open = false;
         app.reader_bottom_focused = false;
         app.reader_secondary = None;
         app.focused_reader = FocusedReader::Primary;
@@ -428,6 +436,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         if app.reader_dual_active {
           // Step State 3 → State 2.
           app.reader_dual_active = false;
+          app.reader_bottom_open = false;
           app.reader_bottom_focused = false;
           app.reader_secondary = None;
           app.focused_reader = FocusedReader::Primary;
@@ -516,9 +525,11 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
   // Secondary reader (State 3, right pane).
   if app.reader_dual_active && app.focused_pane == PaneId::SecondaryReader {
     log::debug!("routing to secondary reader pane");
-    // Tab in secondary reader → focus bottom pane.
+    // Tab in secondary reader → focus bottom pane (if open).
     if key.code == KeyCode::Tab {
-      app.reader_bottom_focused = true;
+      if app.reader_bottom_open {
+        app.reader_bottom_focused = true;
+      }
       return true;
     }
     if let Some(editor) = app.reader_secondary.as_mut() {
@@ -552,6 +563,7 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
       if app.reader_split_active || app.reader_dual_active {
         // Collapse split state — step back to feed.
         app.reader_dual_active = false;
+        app.reader_bottom_open = false;
         app.reader_bottom_focused = false;
         app.reader_secondary = None;
         app.reader_split_active = false;
@@ -831,7 +843,7 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
         app.view = AppView::Feed;
       }
       KeyCode::Char('j') | KeyCode::Down => {
-        app.settings_field = (app.settings_field + 1).min(4);
+        app.settings_field = (app.settings_field + 1).min(5);
       }
       KeyCode::Char('k') | KeyCode::Up => {
         app.settings_field = app.settings_field.saturating_sub(1);
@@ -844,6 +856,9 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
             } else {
               "claude".to_string()
             };
+        } else if app.settings_field == 5 {
+          app.active_theme = app.active_theme.cycle();
+          app.config.theme = app.active_theme;
         } else {
           app.settings_edit_buf = match app.settings_field {
             0 => app.settings_github_token.clone(),
@@ -878,6 +893,7 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
         };
         app.config.default_chat_provider =
           app.settings_default_chat_provider.clone();
+        app.config.theme = app.active_theme;
         // Keep github_token field in sync for repo viewer.
         app.github_token = app.config.github_token.clone();
         // Rebuild chat_ui with updated keys on next open.
@@ -903,6 +919,69 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
 }
 
 fn handle_feed_view(key: KeyEvent, app: &mut App) {
+  // Discovery query input — highest priority.
+  if app.discovery_query_active {
+    match key.code {
+      KeyCode::Esc => {
+        app.discovery_query_active = false;
+        app.discovery_query.clear();
+      }
+      KeyCode::Enter => {
+        if !app.discovery_query.is_empty() && !app.discovery_loading {
+          let topic = app.discovery_query.clone();
+          let config = app.config.clone();
+          app.discovery_query_active = false;
+          spawn_ai_discovery(topic, config, app);
+        }
+      }
+      KeyCode::Backspace => {
+        app.discovery_query.pop();
+      }
+      KeyCode::Char(c) => {
+        app.discovery_query.push(c);
+      }
+      _ => {}
+    }
+    return;
+  }
+
+  // Discoveries tab — plan checklist keys (when a plan is loaded).
+  if app.feed_tab == FeedTab::Discoveries && app.discovery_plan.is_some() {
+    match key.code {
+      KeyCode::Char('j') | KeyCode::Down => {
+        let max = app.discovery_checklist_len().saturating_sub(1);
+        app.discovery_plan_cursor = (app.discovery_plan_cursor + 1).min(max);
+      }
+      KeyCode::Char('k') | KeyCode::Up => {
+        app.discovery_plan_cursor = app.discovery_plan_cursor.saturating_sub(1);
+      }
+      KeyCode::Char(' ') => {
+        let idx = app.discovery_plan_cursor;
+        app.toggle_plan_selection(idx);
+      }
+      KeyCode::Char('a') => {
+        app.add_selected_plan_sources();
+        force_refresh(app);
+      }
+      KeyCode::Esc => {
+        app.discovery_plan = None;
+        app.discovery_plan_selected.clear();
+        app.discovery_plan_cursor = 0;
+      }
+      _ => {}
+    }
+    return;
+  }
+
+  // Discoveries tab — no plan: `/` opens query input.
+  if app.feed_tab == FeedTab::Discoveries {
+    if let KeyCode::Char('/') = key.code {
+      app.discovery_query_active = true;
+      app.discovery_query.clear();
+      return;
+    }
+  }
+
   if app.search_active {
     match key.code {
       KeyCode::Esc => {

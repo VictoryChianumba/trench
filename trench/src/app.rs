@@ -218,6 +218,10 @@ pub struct App {
   pub discovery_list_offset: usize,
   pub discovery_rx: Option<Receiver<DiscoveryMessage>>,
   pub discovery_plan: Option<DiscoveryPlan>,
+  pub discovery_plan_selected: Vec<bool>,
+  pub discovery_plan_cursor: usize,
+  pub discovery_query: String,
+  pub discovery_query_active: bool,
   pub feed_tab: FeedTab,
   pub discovery_loading: bool,
   pub search_query: String,
@@ -261,6 +265,9 @@ pub struct App {
   // Config (full, persisted)
   pub config: Config,
 
+  // Active theme (mirrors config.theme; applied live each frame)
+  pub active_theme: crate::theme::ThemeId,
+
   // Settings screen
   pub settings_field: usize,
   pub settings_editing: bool,
@@ -303,8 +310,9 @@ pub struct App {
   pub reader_secondary: Option<cli_text_reader::Editor>,
   pub focused_reader: FocusedReader,
   pub fulltext_for_secondary: bool,
-  // Bottom pane in State 3 (always visible, focus toggled with Tab)
-  pub reader_bottom_focused: bool,   // bottom pane has keyboard focus
+  // Bottom pane in State 3 (summoned by Ldr+v, dismissed by q/Esc)
+  pub reader_bottom_open: bool,      // pane is visible
+  pub reader_bottom_focused: bool,   // pane has keyboard focus
   pub reader_bottom_details: bool,   // showing details (true) or feed list (false)
   pub reader_bottom_scroll: usize,   // scroll offset for both feed and details
   pub reader_feed_popup_selected: usize,  // selected item in bottom feed list
@@ -371,6 +379,10 @@ impl App {
       discovery_list_offset: 0,
       discovery_rx: None,
       discovery_plan: None,
+      discovery_plan_selected: Vec::new(),
+      discovery_plan_cursor: 0,
+      discovery_query: String::new(),
+      discovery_query_active: false,
       feed_tab: FeedTab::Inbox,
       discovery_loading: false,
       search_query: String::new(),
@@ -395,6 +407,7 @@ impl App {
       details_max_scroll: usize::MAX,
       details_last_item_url: None,
       config: Config::default(),
+      active_theme: crate::theme::ThemeId::Dark,
       settings_field: 0,
       settings_editing: false,
       settings_edit_buf: String::new(),
@@ -421,6 +434,7 @@ impl App {
       reader_secondary: None,
       focused_reader: FocusedReader::Primary,
       fulltext_for_secondary: false,
+      reader_bottom_open: false,
       reader_bottom_focused: false,
       reader_bottom_details: false,
       reader_bottom_scroll: 0,
@@ -1179,9 +1193,10 @@ impl App {
     for msg in messages {
       match msg {
         DiscoveryMessage::PlanReady(plan) => {
-          let checklist = crate::discovery::format_plan_message(&plan);
+          let n_cats = plan.arxiv_categories.len();
+          let n_feeds = plan.rss_urls.len();
+          self.discovery_plan_selected = vec![true; n_cats + n_feeds];
           self.discovery_plan = Some(plan);
-          self.push_chat_assistant_message(checklist);
         }
         DiscoveryMessage::Items(items) => {
           self.merge_discovery_items(items);
@@ -1333,6 +1348,62 @@ impl App {
   pub fn clear_filters(&mut self) {
     self.active_filters = FilterState::new();
     self.reset_active_feed_position();
+  }
+
+  // ── Discovery checklist ─────────────────────────────────────────────────
+
+  /// Number of selectable rows in the discovery plan checklist.
+  pub fn discovery_checklist_len(&self) -> usize {
+    match &self.discovery_plan {
+      Some(p) => p.arxiv_categories.len() + p.rss_urls.len(),
+      None => 0,
+    }
+  }
+
+  /// Toggle checked state for a checklist row (arXiv cats first, then RSS).
+  pub fn discovery_toggle(&mut self, idx: usize) {
+    if let Some(v) = self.discovery_plan_selected.get_mut(idx) {
+      *v = !*v;
+    }
+  }
+
+  /// Add all checked sources to config and save.
+  pub fn discovery_add_checked(&mut self) {
+    let plan = match self.discovery_plan.clone() {
+      Some(p) => p,
+      None => return,
+    };
+    let n_cats = plan.arxiv_categories.len();
+    for (i, cat) in plan.arxiv_categories.iter().enumerate() {
+      if self.discovery_plan_selected.get(i).copied().unwrap_or(false)
+        && !self.config.sources.arxiv_categories.contains(cat)
+      {
+        self.config.sources.arxiv_categories.push(cat.clone());
+      }
+    }
+    for (j, feed) in plan.rss_urls.iter().enumerate() {
+      let idx = n_cats + j;
+      if self.discovery_plan_selected.get(idx).copied().unwrap_or(false) {
+        let exists =
+          self.config.sources.custom_feeds.iter().any(|f| f.url == feed.url);
+        if !exists {
+          self.config.sources.custom_feeds.push(crate::config::CustomFeed {
+            url: feed.url.clone(),
+            name: feed.name.clone(),
+            feed_type: "rss".to_string(),
+          });
+        }
+      }
+    }
+    self.config.save();
+  }
+
+  pub fn toggle_plan_selection(&mut self, idx: usize) {
+    self.discovery_toggle(idx);
+  }
+
+  pub fn add_selected_plan_sources(&mut self) {
+    self.discovery_add_checked();
   }
 
   // ── Sources popup ───────────────────────────────────────────────────────

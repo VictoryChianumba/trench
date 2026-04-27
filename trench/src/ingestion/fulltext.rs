@@ -350,13 +350,31 @@ fn strip_html(html: &str) -> String {
 // Post-processing
 // ---------------------------------------------------------------------------
 
+fn strip_ansi(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let mut chars = s.chars().peekable();
+  while let Some(c) = chars.next() {
+    if c == '\x1b' {
+      for ch in chars.by_ref() {
+        if matches!(ch, 'm' | 'K' | 'J' | 'H' | 'A' | 'B' | 'C' | 'D') {
+          break;
+        }
+      }
+    } else {
+      out.push(c);
+    }
+  }
+  out
+}
+
 fn wrap_lines(text: &str, width: usize) -> Vec<String> {
   let mut paragraphs: Vec<String> = Vec::new();
   let mut current = String::new();
   let mut blank_run = 0usize;
 
   for raw_line in text.lines() {
-    let line = raw_line.trim();
+    let stripped = strip_ansi(raw_line);
+    let line = stripped.trim();
     if line.is_empty() {
       blank_run += 1;
       if blank_run == 1 && !current.trim().is_empty() {

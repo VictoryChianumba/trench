@@ -397,6 +397,22 @@ pub(crate) fn do_refresh(app: &mut App) {
   spawn_fetch(tx, app.config.clone());
 }
 
+/// Spawn an AI discovery query thread using the pipeline and attach the receiver.
+pub(crate) fn spawn_ai_discovery(
+  topic: String,
+  config: config::Config,
+  app: &mut App,
+) {
+  let (tx, rx) = mpsc::channel::<discovery::DiscoveryMessage>();
+  app.discovery_rx = Some(rx);
+  app.discovery_loading = true;
+  app.discovery_plan = None;
+  app.discovery_plan_selected.clear();
+  app.discovery_plan_cursor = 0;
+  app.discovery_items.clear();
+  discovery::pipeline::spawn_discovery(topic, config, tx);
+}
+
 /// Like do_refresh, but always runs — reloads config from disk, abandons any
 /// in-flight fetch, clears the item cache, then starts a fresh fetch.
 pub(crate) fn force_refresh(app: &mut App) {
@@ -690,6 +706,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // Load config.
   let cfg = config::Config::load();
   app.github_token = cfg.github_token.clone();
+  app.active_theme = cfg.theme;
   app.config = cfg;
 
   // Load persisted workflow states.
