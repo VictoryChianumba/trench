@@ -155,7 +155,7 @@ pub enum PaneId {
   SecondaryReader = 5,
 }
 
-const PANE_COUNT: usize = 5;
+const PANE_COUNT: usize = 6;
 
 /// Which reader pane has focus in dual-reader (State 3) mode.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -465,6 +465,7 @@ impl App {
         PaneInfo::new(PaneId::Notes),
         PaneInfo::new(PaneId::Details),
         PaneInfo::new(PaneId::Chat),
+        PaneInfo::new(PaneId::SecondaryReader),
       ],
     }
   }
@@ -488,6 +489,7 @@ impl App {
     notes: Option<Rect>,
     details: Option<Rect>,
     chat: Option<Rect>,
+    secondary_reader: Option<Rect>,
   ) {
     let updates: [(PaneId, Option<Rect>); PANE_COUNT] = [
       (PaneId::Feed, feed),
@@ -495,6 +497,7 @@ impl App {
       (PaneId::Notes, notes),
       (PaneId::Details, details),
       (PaneId::Chat, chat),
+      (PaneId::SecondaryReader, secondary_reader),
     ];
     for (id, opt) in updates {
       let info = self.pane_mut(id);

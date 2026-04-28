@@ -105,7 +105,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     let mr = draw_main_row(frame, app, h_margin(rows[3], margin));
     log::debug!("draw_main_row: {}ms", t.elapsed().as_millis());
 
-    app.update_pane_rects(mr.feed, mr.reader, mr.notes, mr.details, chat_rect);
+    app.update_pane_rects(mr.feed, mr.reader, mr.notes, mr.details, chat_rect, mr.secondary_reader);
 
     let t = std::time::Instant::now();
     draw_footer(frame, app, rows[4]);
@@ -142,7 +142,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
         log::debug!("chat_ui.draw (bottom): {}ms", t.elapsed().as_millis());
       }
     }
-    app.update_pane_rects(mr.feed, mr.reader, mr.notes, mr.details, chat_rect);
+    app.update_pane_rects(mr.feed, mr.reader, mr.notes, mr.details, chat_rect, mr.secondary_reader);
 
     let t = std::time::Instant::now();
     draw_footer(frame, app, rows[4]);
@@ -304,6 +304,7 @@ fn draw_search_row(frame: &mut Frame, app: &App, area: Rect) {
 struct MainRowRects {
   feed: Option<Rect>,
   reader: Option<Rect>,
+  secondary_reader: Option<Rect>,
   notes: Option<Rect>,
   details: Option<Rect>,
 }
@@ -332,6 +333,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     return MainRowRects {
       feed: None,
       reader: Some(left_rect),
+      secondary_reader: Some(right_rect),
       notes: None,
       details: None,
     };
@@ -354,6 +356,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     return MainRowRects {
       feed: Some(feed_rect),
       reader: Some(reader_rect),
+      secondary_reader: None,
       notes: None,
       details: None,
     };
@@ -370,6 +373,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     return MainRowRects {
       feed: None,
       reader: Some(area),
+      secondary_reader: None,
       notes: None,
       details: None,
     };
@@ -395,6 +399,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     return MainRowRects {
       feed: None,
       reader: Some(reader_rect),
+      secondary_reader: None,
       notes: Some(notes_rect),
       details: None,
     };
@@ -437,6 +442,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     return MainRowRects {
       feed: Some(feed_rect),
       reader: None,
+      secondary_reader: None,
       notes: if app.notes_active { Some(bottom_rect) } else { None },
       details: details_rect,
     };
@@ -485,6 +491,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
   MainRowRects {
     feed: Some(feed_rect),
     reader: None,
+    secondary_reader: None,
     notes: if app.notes_active { Some(right_rect) } else { None },
     details: details_rect,
   }
