@@ -144,7 +144,8 @@ fn handle_help_overlay(key: KeyEvent, app: &mut App) -> bool {
   }
   match key.code {
     KeyCode::Tab | KeyCode::Char('l') => {
-      app.help_section = (app.help_section + 1) % 6;
+      app.help_section =
+        (app.help_section + 1) % crate::ui::HELP_SECTION_COUNT;
       app.help_scroll = 0;
     }
     KeyCode::BackTab | KeyCode::Char('h') => {

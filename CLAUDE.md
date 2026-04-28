@@ -134,95 +134,100 @@ Single `draw(frame, app)` entry point. Feed view: tab bar → search row → ite
 
 # Tentative — TODO Checklist
 
+Status markers: [x] done  [-] in progress / partial  [ ] not started
+
 ## Bugs to fix
 - [ ] Voice mode broken in hygg rewrite (fix after ElevenLabs credits topped up)
-- [ ] Chat scrolling not smooth — key repeat and trackpad inertia (partially fixed)
+- [-] Chat scrolling not smooth — key repeat and trackpad inertia (partially fixed)
 - [ ] Raw ANSI escape codes leaking into right pane in reader mode
-- [ ] Notes opening on vim `n` keypress in reader mode (fix with leader key)
+- [x] Notes opening on vim `n` keypress — fixed, leader key now required
 
 ## Leader key (Ctrl+T) — app-wide
-- [ ] Implement Ctrl+T as global leader key for all Tentative keybindings
-- [ ] Hygg vim keybindings remain unchanged (no leader needed)
-- [ ] Update footer to always show `Ldr: ctrl+t` and `Ldr+[key]` for all bindings
-- [ ] Full keybinding descriptions reserved for help screen only
+- [x] Implement Ctrl+T as global leader key for all Tentative keybindings
+- [x] Hygg vim keybindings remain unchanged (no leader needed)
+- [x] Update footer to always show `Ldr: ctrl+t` and `Ldr+[key]` for all bindings
+- [x] Full keybinding descriptions reserved for help screen only
 
 ## Chat panel redesign
-- [ ] Move chat from right pane to bottom panel (Feynman-style)
-- [ ] Chat panel height = one full screen height, fixed (not additive)
-- [ ] Chat streams below main panes, scrollable within its one-screen window
-- [ ] `z` moves chat panel to top of application (same content, same scroll, just repositioned)
-- [ ] `z` again moves it back to bottom
-- [ ] Subtle background color difference to separate chat from main panes (Feynman-style)
-- [ ] Clean minimal message style — no heavy borders on messages
-- [ ] User messages plain, assistant messages slightly dimmed/indented
+- [x] Move chat from right pane to bottom panel (Feynman-style)
+- [x] Chat panel height fixed, not additive
+- [x] Chat streams below main panes, scrollable within its window
+- [x] `Ldr+z` moves chat panel to top / bottom
+- [x] Subtle background color difference separates chat from main panes
+- [-] Clean minimal message style — no heavy borders on messages
+- [-] User messages plain, assistant messages slightly dimmed/indented
 
 ## Hygg integration
-- [ ] Step 10: Wire rewritten cli-text-reader into Tentative left pane (in progress)
-- [ ] Reader mode: full width when no right panel active
-- [ ] Reader mode: 60/40 split when notes or chat active
+- [x] Step 10: Wire rewritten cli-text-reader into Tentative reader pane
+- [x] Reader mode: full width when no right panel active
+- [x] Reader mode: 60/40 split when notes active
 - [ ] Voice mode: fix wiring after ElevenLabs credits topped up
-- [ ] Floating hygg reader popup — open selected paper in a centered overlay (Ldr+Enter or dedicated key) without leaving the feed view; dismissible with Esc
-- [ ] Secondary split view — toggle a persistent hygg pane alongside the feed list (Ldr+v or similar); user can switch focus between feed and reader pane independently; reader pane retains scroll position when focus returns
+- [x] Floating hygg reader popup — Ldr+Enter, dismissible with Esc
+- [x] Secondary split view — three-state cycle (full → split → dual) via Ldr+v
 
 ## Reader pane tabs
 - [ ] Tabbed reader panes: open multiple papers and switch between them (like browser tabs)
 - [ ] Tab bar across the top of the reader area showing open paper titles (truncated)
-- [ ] Ldr+t (or similar) to open a new reader tab from the feed list; Ldr+w to close current tab
-- [ ] Switch tabs with Ldr+[ / Ldr+] or number keys (Ldr+1, Ldr+2 …)
-- [ ] Side-by-side mode: split the reader area vertically to show two papers simultaneously (Ldr+s or similar)
-- [ ] In side-by-side mode, each pane has its own scroll position and tab stack
-- [ ] Tab state persists across sessions (reopen app → tabs restored)
+- [ ] Ldr+t to open a new tab; Ldr+w to close current tab
+- [ ] Switch tabs with Ldr+[ / Ldr+] or number keys
+- [ ] Side-by-side mode: two papers simultaneously (distinct from current dual-reader)
+- [ ] Tab state persists across sessions
 
 ## Dashboard / Home view
-- [ ] Add a home/dashboard screen as the default landing view (before or alongside the feed)
+- [ ] Add a home/dashboard screen as the default landing view
 - [ ] Show active AI model in use
 - [ ] Show last read paper (title, source, position) with quick-resume action
 - [ ] Show current research topic / focus area (derived from recent feed activity or manually set)
-- [ ] Dashboard is navigable and updates as you use the app
-- [ ] Design question: is this a separate tab/view, or an overlay on the feed list?
+- [ ] Design question: separate tab/view, or overlay on the feed list?
 
 ## Notes
-- [ ] Notes accessible from reader mode via Ldr+n
-- [ ] Notes panel opens alongside reader — placement TBD:
-  - Single paper open: notes in right pane (60/40 split)
-  - Two papers side by side: notes as a bottom panel or a third column?
-  - Notes should stay anchored to the paper they were opened from
-- [ ] Tabbed notes: multiple note documents open at once, tab bar across the top of the notes pane
-- [ ] Each note tab is associated with a paper (keyed by URL/arXiv ID) so reopening a paper restores its notes
-- [ ] Notes persist to `~/.config/trench/notes/` keyed by paper ID
+- [x] Notes accessible from reader mode via Ldr+n
+- [x] Notes panel opens in right pane alongside reader (60/40 split)
+- [x] Notes anchored to paper (keyed by URL/arXiv ID)
+- [x] Notes persist to disk
+- [ ] Tabbed notes: multiple note documents open at once, tab bar across top of notes pane
+- [ ] Reopening a paper restores its notes tab
 
 ## Help screen
-- [ ] Design and implement full help screen
-- [ ] Show all keybindings with full Ctrl+T leader notation
-- [ ] Accessible via Ldr+?
+- [x] Design and implement full help screen
+- [x] All keybindings documented including leader key notation
+- [x] Accessible via Ldr+?
+- [x] Repo viewer, Discoveries, filter panel, settings all covered
 
 ## Source discovery (agent-based)
-- [ ] Agent-assisted source discovery — ask model to find sources on a topic
+- [-] Agent-assisted source discovery — discovery/ module exists, UI partially wired
 - [ ] Trending/popularity filter using existing signals + web search
-- [ ] Default sources remain, agents are supplementary
+- [x] Default sources remain, agents are supplementary
 
 ## UI polish
-- [ ] Themes system — allow user to change color scheme
-- [ ] Settings screen: add theme selection
-- [ ] Overall UI improvements (ongoing)
+- [x] Themes system — Dark / Light / AMOLED, runtime switching
+- [x] Settings screen: theme selection via cycle field
+- [-] Overall UI improvements (ongoing)
+
+## Settings popup (hygg-reader)
+- [x] :settings / :config / :set command opens popup in reader
+- [x] TTS_PROVIDER exposed as cycle-select (auto → elevenlabs → say → piper)
+- [x] SAY_VOICE field exposed with hint
+- [x] Per-field hints shown when field is focused
+- [x] TTS_PROVIDER and SAY_VOICE persist via save_config
 
 ## Semantic Scholar
-- [ ] Fix rate limiting (currently hitting cap immediately)
+- [-] Rate limiting partially handled (caps applied, no key)
 - [ ] Apply for proper API key
-- [ ] Re-enable enrichment once key obtained
+- [ ] Re-enable full enrichment once key obtained
 
 ## Hygg rewrite (parallel agents)
-- [ ] CC plan executing on branch hygg-rewrite-codex (stages 6-9 complete)
-- [ ] Codex plan executing on same branch (stages 1-5 complete)
-- [ ] Compare both approaches when complete
-- [ ] Wire winning approach into Tentative (step 10)
+- [x] CC plan: stages 6-9 complete on hygg-rewrite-codex branch
+- [x] Codex plan: stages 1-5 complete on same branch
+- [x] Wire winning approach into Tentative (Step 10 complete)
+- [ ] Compare and clean up both agent branches
 
 ## README / open source
-- [ ] Write README for public release
-- [ ] Add hero screenshot/demo
-- [ ] Document installation and configuration
-- [ ] Document keybindings
-- [ ] Choose license (currently AGPL-3.0)
+- [x] Write README for public release
+- [x] Add hero screenshot/demo
+- [x] Document installation and configuration
+- [x] Document keybindings
+- [ ] Choose and finalise license (currently AGPL-3.0)
 
 ## Philosophy — Beautiful Code & Software
 
