@@ -715,7 +715,6 @@ fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
       break;
     }
     let is_selected = abs_i == selected;
-    let marker = if is_selected { "▶ " } else { "  " };
     let type_label = item.content_type.short_label();
     // Short date: first 7 chars of published_at (YYYY-MM).
     let date = &item.published_at[..item.published_at.len().min(7)];
@@ -727,11 +726,16 @@ fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
       if y >= area.y + area.height {
         break;
       }
-      let text = if li == line_count - 1 {
-        // Append metadata on the last title line.
-        format!("{marker}{line}{suffix}")
+      // Bullet only on the first line; continuation lines indent to match.
+      let prefix = if li == 0 {
+        if is_selected { "▶ " } else { "  " }
       } else {
-        format!("{marker}{line}")
+        "  "
+      };
+      let text = if li == line_count - 1 {
+        format!("{prefix}{line}{suffix}")
+      } else {
+        format!("{prefix}{line}")
       };
       let style = if is_selected {
         Style::default().fg(t.text).add_modifier(Modifier::BOLD)
@@ -1561,7 +1565,7 @@ fn draw_reader_bottom_pane(frame: &mut Frame, app: &App, area: Rect) {
   let block = Block::default()
     .borders(Borders::ALL)
     .border_style(Style::default().fg(border_color))
-    .title(Span::styled(title_str, Style::default().fg(t.text_dim)));
+    .title(Span::styled(title_str, Style::default().fg(t.accent)));
 
   let inner = block.inner(popup_rect);
   frame.render_widget(block, popup_rect);
@@ -1609,12 +1613,12 @@ fn draw_bottom_pane_feed(frame: &mut Frame, app: &App, area: Rect) {
     if is_selected {
       lines.push(Line::from(Span::styled(
         format!("▶ {title}"),
-        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
       )));
     } else {
       lines.push(Line::from(Span::styled(
         format!("  {title}"),
-        Style::default().fg(t.text_dim),
+        Style::default().fg(t.text),
       )));
     }
   }

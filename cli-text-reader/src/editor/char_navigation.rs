@@ -82,35 +82,46 @@ impl Editor {
 
     let line = &self.lines[line_idx];
 
+    // Convert char-column index to byte offset for safe string slicing.
+    let char_positions: Vec<(usize, char)> = line.char_indices().collect();
+    let char_count = char_positions.len();
+
     if forward {
-      // Search forward from current position + 1
-      let start_pos = col_idx + 1;
-      if let Some(found_pos) = line[start_pos..].find(target_char) {
-        let absolute_pos = start_pos + found_pos;
-        if till && absolute_pos > 0 {
-          Some(absolute_pos - 1) // Stop before character for 't'
-        } else {
-          Some(absolute_pos) // Stop on character for 'f'
-        }
-      } else {
-        None
+      let search_start_char = col_idx + 1;
+      if search_start_char > char_count {
+        return None;
       }
+      let byte_start = if search_start_char < char_count {
+        char_positions[search_start_char].0
+      } else {
+        line.len()
+      };
+      for (char_pos, (_, ch)) in char_positions[search_start_char..].iter().enumerate() {
+        if *ch == target_char {
+          let found_char_idx = search_start_char + char_pos;
+          return if till && found_char_idx > 0 {
+            Some(found_char_idx - 1)
+          } else {
+            Some(found_char_idx)
+          };
+        }
+      }
+      let _ = byte_start; // suppress unused warning
+      None
     } else {
-      // Search backward from current position - 1
       if col_idx == 0 {
         return None;
       }
-
-      let search_area = &line[..col_idx];
-      if let Some(found_pos) = search_area.rfind(target_char) {
-        if till {
-          Some(found_pos + 1) // Stop after character for 'T'
-        } else {
-          Some(found_pos) // Stop on character for 'F'
+      for char_pos in (0..col_idx).rev() {
+        if char_positions[char_pos].1 == target_char {
+          return if till {
+            Some(char_pos + 1)
+          } else {
+            Some(char_pos)
+          };
         }
-      } else {
-        None
       }
+      None
     }
   }
 
@@ -123,7 +134,8 @@ impl Editor {
     }
 
     let line = &self.lines[line_idx];
-    if col_idx >= line.len() {
+    let line_char_count = line.chars().count();
+    if col_idx >= line_char_count {
       return None;
     }
 
@@ -145,7 +157,7 @@ impl Editor {
       let mut search_col = col_idx + 1;
 
       // Search in current line first
-      while search_col < line.len() {
+      while search_col < line_char_count {
         if let Some(c) = line.chars().nth(search_col) {
           if c == opening {
             depth += 1;

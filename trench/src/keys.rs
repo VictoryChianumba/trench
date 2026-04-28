@@ -538,6 +538,9 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
       let action = editor.handle_key(key);
       if matches!(action, cli_text_reader::EditorAction::Quit) {
         app.reader_secondary = None;
+        app.reader_dual_active = false;
+        app.reader_bottom_open = false;
+        app.reader_bottom_focused = false;
         app.focused_reader = FocusedReader::Primary;
         app.focused_pane = PaneId::Reader;
       }
@@ -562,17 +565,25 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
   if let Some(editor) = app.reader.as_mut() {
     let action = editor.handle_key(key);
     if matches!(action, cli_text_reader::EditorAction::Quit) {
-      if app.reader_split_active || app.reader_dual_active {
-        // Collapse split state — step back to feed.
+      if app.reader_dual_active {
+        // State 3 → State 2: close secondary pane, keep primary reader open.
         app.reader_dual_active = false;
         app.reader_bottom_open = false;
         app.reader_bottom_focused = false;
         app.reader_secondary = None;
+        app.focused_pane = PaneId::Reader;
+      } else if app.reader_split_active {
+        // State 2 → State 1: close split, return to feed.
         app.reader_split_active = false;
+        app.reader_active = false;
+        app.reader = None;
+        app.focused_pane = PaneId::Feed;
+      } else {
+        // State 1 reader: close reader entirely.
+        app.reader_active = false;
+        app.reader = None;
+        app.focused_pane = PaneId::Feed;
       }
-      app.reader_active = false;
-      app.reader = None;
-      app.focused_pane = PaneId::Feed;
     }
   }
   true
