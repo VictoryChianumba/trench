@@ -5,12 +5,31 @@ const WRAP_WIDTH: usize = 80;
 /// Fetch and return plain-text lines for a feed item.
 ///
 /// Fallback chain:
+///   0. arXiv LaTeX source (math pre-rendered; arXiv / HuggingFace papers only).
 ///   1. Cached `full_content` from RSS `<content:encoded>`.
 ///   2. arXiv HTML render (only for arXiv / HuggingFace paper URLs).
 ///   3. Readability extraction from the item URL.
 ///   3b. Chromium headless fetch + readability (skipped if no chromium in PATH).
 ///   4. `summary_short` as last resort.
 pub fn fetch(item: &FeedItem) -> Result<Vec<String>, String> {
+  // Step 0: arXiv LaTeX source with math pre-rendered as Unicode.
+  if let Some(id) = extract_arxiv_id(&item.url) {
+    log::debug!("fulltext: step=arxiv_latex id={id}");
+    match arxiv_render::fetch::fetch_source(id) {
+      Ok(sources) => {
+        let lines = arxiv_render::parse::to_lines(sources);
+        if lines.len() > 5 {
+          log::debug!("fulltext: arxiv_latex produced {} lines", lines.len());
+          return Ok(lines);
+        }
+        log::warn!("fulltext: arxiv_latex too short for {id}, falling through");
+      }
+      Err(e) => {
+        log::warn!("fulltext: arxiv_latex failed for {id} — {e}, falling through");
+      }
+    }
+  }
+
   // Step 1: cached full_content from RSS.
   if let Some(ref content) = item.full_content {
     if !content.is_empty() {

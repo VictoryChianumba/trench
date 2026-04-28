@@ -1,5 +1,4 @@
-mod fetch;
-mod parse;
+use arxiv_render::{fetch, parse};
 
 fn main() {
   let arg = std::env::args().nth(1).unwrap_or_default();

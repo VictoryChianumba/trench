@@ -3,6 +3,10 @@ name = "arxiv-render"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "arxiv_render"
+path = "src/lib.rs"
+
 [[bin]]
 name = "arxiv-render"
 path = "src/main.rs"
