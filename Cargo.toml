@@ -12,6 +12,8 @@ members = [
   "trench",
   "crates/notes",
   "crates/chat",
+  "crates/math-render",
+  "crates/arxiv-render",
 
   # Internal
   # "examples",

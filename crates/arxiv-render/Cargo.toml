@@ -1,0 +1,15 @@
+[package]
+name = "arxiv-render"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "arxiv-render"
+path = "src/main.rs"
+
+[dependencies]
+math-render = { path = "../math-render" }
+flate2 = "1"
+tar = "0.4"
+reqwest = { version = "0.12", features = ["blocking"] }
+textwrap = "0.16"
