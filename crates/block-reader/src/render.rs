@@ -15,6 +15,10 @@ const BABY_BLUE: Color = Color::Rgb(100, 181, 246);
 const ACCENT_DIM: Color = Color::Rgb(70, 130, 180);
 const MATH_COLOR: Color = Color::Rgb(80, 200, 160);
 const TOC_DIM: Color = Color::Rgb(80, 95, 115);
+const MONO_COLOR: Color = Color::Rgb(180, 160, 120);
+const CODE_BG: Color = Color::Rgb(20, 25, 35);
+const CODE_FG: Color = Color::Rgb(160, 200, 180);
+const RULE_COLOR: Color = Color::Rgb(55, 65, 80);
 const TOC_WIDTH: u16 = 28;
 
 pub fn draw(frame: &mut Frame, reader: &Reader) {
@@ -128,6 +132,45 @@ fn render_visual_line<'a>(
       let prefix = if *is_first { "┌ " } else if *is_last { "└ " } else { "│ " };
       Line::styled(format!("{}{}", prefix, text), base_style.fg(MATH_COLOR))
     }
+
+    VisualLineKind::StyledProse(spans) => {
+      if !query.is_empty() && matches.contains(&vl_idx) {
+        highlight_spans(spans, query, bg)
+      } else {
+        let ratatui_spans: Vec<Span> = spans.iter().map(|s| {
+          let mut style = base_style;
+          if s.bold        { style = style.add_modifier(Modifier::BOLD); }
+          if s.italic      { style = style.add_modifier(Modifier::ITALIC); }
+          if s.underline   { style = style.add_modifier(Modifier::UNDERLINED); }
+          if s.strikethrough { style = style.add_modifier(Modifier::CROSSED_OUT); }
+          if s.monospace   { style = style.fg(MONO_COLOR); }
+          if let Some((r, g, b)) = s.color { style = style.fg(Color::Rgb(r, g, b)); }
+          Span::styled(s.text.clone(), style)
+        }).collect();
+        Line::from(ratatui_spans)
+      }
+    }
+
+    VisualLineKind::ListItem { .. } => {
+      // text already contains indent + marker prefix from build_visual_lines.
+      if !query.is_empty() && matches.contains(&vl_idx) {
+        highlight_query(text, query, bg)
+      } else {
+        Line::styled(text.clone(), base_style)
+      }
+    }
+
+    VisualLineKind::Code { is_first, is_last } => {
+      let prefix = if *is_first { "╔ " } else if *is_last { "╚ " } else { "║ " };
+      Line::styled(
+        format!("{}{}", prefix, text),
+        Style::default().bg(CODE_BG).fg(CODE_FG),
+      )
+    }
+
+    VisualLineKind::Rule => {
+      Line::styled(text.clone(), Style::default().fg(RULE_COLOR))
+    }
   }
 }
 
@@ -153,6 +196,44 @@ fn highlight_query(text: &str, query: &str, bg: Color) -> Line<'static> {
   }
 
   Line::from(spans)
+}
+
+/// Render a StyledProse line with search term highlighting.
+/// Each span is rendered with its own style; the matching substring is
+/// overridden with a yellow-bg highlight wherever it appears.
+fn highlight_spans(spans: &[doc_model::InlineSpan], query: &str, bg: Color) -> Line<'static> {
+  let mut ratatui_spans: Vec<Span<'static>> = Vec::new();
+
+  for s in spans {
+    let mut style = Style::default().bg(bg);
+    if s.bold        { style = style.add_modifier(Modifier::BOLD); }
+    if s.italic      { style = style.add_modifier(Modifier::ITALIC); }
+    if s.underline   { style = style.add_modifier(Modifier::UNDERLINED); }
+    if s.strikethrough { style = style.add_modifier(Modifier::CROSSED_OUT); }
+    if s.monospace   { style = style.fg(MONO_COLOR); }
+    if let Some((r, g, b)) = s.color { style = style.fg(Color::Rgb(r, g, b)); }
+
+    let lower = s.text.to_lowercase();
+    let ql = query.len();
+    let mut pos = 0;
+
+    while let Some(start) = lower[pos..].find(query) {
+      let abs = pos + start;
+      if abs > pos {
+        ratatui_spans.push(Span::styled(s.text[pos..abs].to_string(), style));
+      }
+      ratatui_spans.push(Span::styled(
+        s.text[abs..abs + ql].to_string(),
+        Style::default().bg(Color::Yellow).fg(Color::Black),
+      ));
+      pos = abs + ql;
+    }
+    if pos < s.text.len() {
+      ratatui_spans.push(Span::styled(s.text[pos..].to_string(), style));
+    }
+  }
+
+  Line::from(ratatui_spans)
 }
 
 fn draw_toc(frame: &mut Frame, reader: &Reader, area: Rect) {

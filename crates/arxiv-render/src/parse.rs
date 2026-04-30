@@ -1,4 +1,4 @@
-use doc_model::Block;
+use doc_model::{Block, InlineSpan};
 use math_render::{MathInput, render};
 use std::collections::HashMap;
 
@@ -11,15 +11,71 @@ enum ListKind {
   Description,
 }
 
+// ── Inline builder ────────────────────────────────────────────────────────────
+
+/// Accumulates plain text and styled spans for the current paragraph line.
+/// When flushed, emits Block::StyledLine if any styled span was added,
+/// or Block::Line if everything is plain text.
+struct InlineBuilder {
+  plain_buf: String,
+  spans: Vec<InlineSpan>,
+  has_style: bool,
+}
+
+impl InlineBuilder {
+  fn new() -> Self {
+    Self { plain_buf: String::new(), spans: Vec::new(), has_style: false }
+  }
+
+  fn push_plain(&mut self, s: &str) { self.plain_buf.push_str(s); }
+  fn push_char(&mut self, c: char) { self.plain_buf.push(c); }
+
+  fn is_empty(&self) -> bool { self.plain_buf.is_empty() && self.spans.is_empty() }
+
+  /// Flush accumulated plain text as a plain span into the spans vec.
+  fn flush_plain(&mut self) {
+    if !self.plain_buf.is_empty() {
+      self.spans.push(InlineSpan::plain(std::mem::take(&mut self.plain_buf)));
+    }
+  }
+
+  /// Add a styled span. The closure sets style flags on an InlineSpan.
+  fn push_styled(&mut self, text: String, style: impl Fn(InlineSpan) -> InlineSpan) {
+    if text.is_empty() { return; }
+    self.flush_plain();
+    self.spans.push(style(InlineSpan::plain(text)));
+    self.has_style = true;
+  }
+
+  /// Consume and reset. Returns Some(spans) if styled, None if plain-only.
+  fn finish(&mut self) -> Option<Vec<InlineSpan>> {
+    if !self.has_style {
+      self.spans.clear();
+      return None;
+    }
+    self.flush_plain();
+    self.has_style = false;
+    Some(std::mem::take(&mut self.spans))
+  }
+
+  fn take_plain(&mut self) -> String {
+    self.spans.clear();
+    self.has_style = false;
+    std::mem::take(&mut self.plain_buf)
+  }
+}
+
 const THEOREM_ENVS: &[&str] = &[
   "theorem", "lemma", "proposition", "corollary", "definition",
   "remark", "example", "proof", "claim", "conjecture",
 ];
 
 const FULL_SKIP_ENVS: &[&str] = &[
-  "lstlisting", "verbatim", "tikzpicture", "algorithm", "algorithmic",
+  "tikzpicture", "algorithm", "algorithmic",
   "minipage", "thebibliography", "pgfpicture",
 ];
+
+const CODE_ENVS: &[&str] = &["verbatim", "lstlisting", "Verbatim", "minted"];
 
 const CAPTION_ENVS: &[&str] = &[
   "figure", "figure*", "table", "table*", "wrapfigure", "subfigure",
@@ -171,7 +227,9 @@ fn process_body(
   list_stack: &mut Vec<ListKind>,
 ) -> Vec<Block> {
   let mut out: Vec<Block> = Vec::new();
-  let mut current_line = String::new();
+  let mut builder = InlineBuilder::new();
+  // When Some, the next flush emits Block::ListItem instead of Block::Line/StyledLine.
+  let mut list_item_pending: Option<(u8, String)> = None;
 
   let display_math_envs = [
     "equation", "equation*", "align", "align*", "aligned",
@@ -211,7 +269,7 @@ fn process_body(
           let env = env.trim().to_string();
 
           if display_math_envs.iter().any(|e| *e == env.as_str()) {
-            flush_line(&mut current_line, &mut out);
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
             let (math, adv) = read_until_end(&text, i, &env);
             i += adv;
             let rendered = render_math(&math, macros);
@@ -227,7 +285,7 @@ fn process_body(
           }
 
           if THEOREM_ENVS.contains(&env.as_str()) {
-            flush_line(&mut current_line, &mut out);
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
             out.push(Block::Blank);
             out.push(Block::Header { level: 3, text: capitalize(&env) });
             continue;
@@ -245,7 +303,7 @@ fn process_body(
           if CAPTION_ENVS.contains(&env.as_str()) {
             let (body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
-            flush_line(&mut current_line, &mut out);
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
             if let Some(cap) = extract_caption(&body_text) {
               out.push(Block::Line(format!("[Figure: {}]", cap)));
             }
@@ -255,10 +313,26 @@ fn process_body(
           if TABULAR_ENVS.contains(&env.as_str()) {
             let (body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
-            flush_line(&mut current_line, &mut out);
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
             if let Some(matrix) = parse_tabular(&body_text) {
               out.push(matrix);
             }
+            continue;
+          }
+
+          if CODE_ENVS.contains(&env.as_str()) {
+            let (body_text, adv) = read_until_end(&text, i, &env);
+            i += adv;
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
+            let lang = if env.starts_with("lstlisting") || env == "minted" {
+              extract_lstlisting_lang(&body_text)
+            } else { None };
+            let skip_opts = body_text.trim_start().starts_with('[');
+            let lines: Vec<String> = body_text.lines()
+              .skip(if skip_opts { 1 } else { 0 })
+              .map(|l| l.to_string())
+              .collect();
+            if !lines.is_empty() { out.push(Block::CodeBlock { lang, lines }); }
             continue;
           }
 
@@ -274,7 +348,7 @@ fn process_body(
         "section" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           out.push(Block::Blank);
           out.push(Block::Header { level: 1, text: title.trim().to_string() });
           out.push(Block::Blank);
@@ -282,7 +356,7 @@ fn process_body(
         "subsection" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           out.push(Block::Blank);
           out.push(Block::Header { level: 2, text: title.trim().to_string() });
           out.push(Block::Blank);
@@ -290,17 +364,42 @@ fn process_body(
         "subsubsection" | "paragraph" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           out.push(Block::Header { level: 3, text: title.trim().to_string() });
         }
 
-        "emph" | "textbf" | "textit" | "texttt" | "text" | "mathrm"
-        | "mathbf" | "mathit" | "mathcal" | "mathbb"
-        | "textsubscript" | "textsuperscript" | "textnormal"
-        | "underline" | "overline" | "uline" => {
+        // Inline styling — each variant sets the appropriate style flag.
+        "textbf" | "mathbf" => {
           let (content, skip) = read_braced_arg(&text, i);
           i += skip;
-          current_line.push_str(&content);
+          builder.push_styled(content, |s| InlineSpan { bold: true, ..s });
+        }
+        "textit" | "emph" | "mathit" => {
+          let (content, skip) = read_braced_arg(&text, i);
+          i += skip;
+          builder.push_styled(content, |s| InlineSpan { italic: true, ..s });
+        }
+        "texttt" | "mathtt" | "textnormal" => {
+          let (content, skip) = read_braced_arg(&text, i);
+          i += skip;
+          builder.push_styled(content, |s| InlineSpan { monospace: true, ..s });
+        }
+        "underline" | "uline" => {
+          let (content, skip) = read_braced_arg(&text, i);
+          i += skip;
+          builder.push_styled(content, |s| InlineSpan { underline: true, ..s });
+        }
+        "sout" => {
+          let (content, skip) = read_braced_arg(&text, i);
+          i += skip;
+          builder.push_styled(content, |s| InlineSpan { strikethrough: true, ..s });
+        }
+        // Commands that carry content but no renderable style difference:
+        "text" | "mathrm" | "mathcal" | "mathbb" | "overline"
+        | "textsubscript" | "textsuperscript" => {
+          let (content, skip) = read_braced_arg(&text, i);
+          i += skip;
+          builder.push_plain(&content);
         }
 
         "textcolor" | "colorbox" | "fbox" | "mbox" | "makebox" => {
@@ -308,35 +407,48 @@ fn process_body(
           i += skip1;
           let (content, skip2) = read_braced_arg(&text, i);
           i += skip2;
-          current_line.push_str(&content);
+          builder.push_plain(&content);
+        }
+
+        // Inline verbatim: \verb|...|
+        "verb" => {
+          if i < len {
+            let delim = text[i];
+            i += 1;
+            let start = i;
+            while i < len && text[i] != delim { i += 1; }
+            let verbatim: String = text[start..i].iter().collect();
+            if i < len { i += 1; }
+            builder.push_styled(verbatim, |s| InlineSpan { monospace: true, ..s });
+          }
         }
 
         // Ellipsis commands → Unicode.
         "ldots" | "cdots" | "dots" | "dotsc" | "dotsb" | "dotsi" => {
-          current_line.push('…');
+          builder.push_char('…');
         }
 
         // Special letter commands → Unicode.
-        "ss" => current_line.push('ß'),
-        "ae" => current_line.push('æ'),
-        "AE" => current_line.push('Æ'),
-        "oe" => current_line.push('œ'),
-        "OE" => current_line.push('Œ'),
-        "aa" => current_line.push('å'),
-        "AA" => current_line.push('Å'),
-        "o"  => current_line.push('ø'),
-        "O"  => current_line.push('Ø'),
-        "l"  => current_line.push('ł'),
-        "L"  => current_line.push('Ł'),
-        "i"  => current_line.push('ı'),
+        "ss" => builder.push_char('ß'),
+        "ae" => builder.push_char('æ'),
+        "AE" => builder.push_char('Æ'),
+        "oe" => builder.push_char('œ'),
+        "OE" => builder.push_char('Œ'),
+        "aa" => builder.push_char('å'),
+        "AA" => builder.push_char('Å'),
+        "o"  => builder.push_char('ø'),
+        "O"  => builder.push_char('Ø'),
+        "l"  => builder.push_char('ł'),
+        "L"  => builder.push_char('Ł'),
+        "i"  => builder.push_char('ı'),
 
         // Non-alphabetic accent commands: \' \" \` \^ \~ \. \=
         "'" | "`" | "\"" | "^" | "~" | "." | "=" => {
           let (base, skip) = read_accent_arg(&text, i);
           i += skip;
           match accent_char(&cmd, base.trim()) {
-            Some(ch) => current_line.push(ch),
-            None => current_line.push_str(base.trim()),
+            Some(ch) => builder.push_char(ch),
+            None => builder.push_plain(base.trim()),
           }
         }
         // Alphabetic accent commands: \c \H \v \k \u \r
@@ -345,14 +457,14 @@ fn process_body(
             let (base, skip) = read_accent_arg(&text, i);
             i += skip;
             match accent_char(&cmd, base.trim()) {
-              Some(ch) => current_line.push(ch),
-              None => current_line.push_str(base.trim()),
+              Some(ch) => builder.push_char(ch),
+              None => builder.push_plain(base.trim()),
             }
           }
         }
 
         // Backslash-space → literal space.
-        " " => current_line.push(' '),
+        " " => builder.push_char(' '),
 
         "color" | "bibliography" | "bibliographystyle" | "maketitle"
         | "tableofcontents" | "newcommand" | "renewcommand" | "providecommand"
@@ -385,13 +497,13 @@ fn process_body(
           }
           let (_key, skip) = read_braced_arg(&text, i);
           i += skip;
-          if cmd != "nocite" { current_line.push_str("[ref]"); }
+          if cmd != "nocite" { builder.push_plain("[ref]"); }
         }
         "ref" | "eqref" | "cref" | "Cref" | "autoref" | "vref"
         | "nameref" | "pageref" => {
           let (_key, skip) = read_braced_arg(&text, i);
           i += skip;
-          current_line.push_str("[§]");
+          builder.push_plain("[§]");
         }
         "label" => {
           let (_key, skip) = read_braced_arg(&text, i);
@@ -406,7 +518,7 @@ fn process_body(
           i += skip;
           let n = footnotes.len() + 1;
           footnotes.push(render_text_with_math(&note, macros));
-          current_line.push_str(&format!("[{}]", n));
+          builder.push_plain(&format!("[{}]", n));
         }
         "hyperref" => {
           if i < len && text[i] == '[' {
@@ -415,7 +527,7 @@ fn process_body(
           }
           let (content, skip) = read_braced_arg(&text, i);
           i += skip;
-          current_line.push_str(&content);
+          builder.push_plain(&content);
         }
         "url" | "href" => {
           let (url, skip) = read_braced_arg(&text, i);
@@ -423,9 +535,9 @@ fn process_body(
           if cmd == "href" {
             let (display, skip2) = read_braced_arg(&text, i);
             i += skip2;
-            current_line.push_str(&display);
+            builder.push_plain(&display);
           } else {
-            current_line.push_str(url.trim());
+            builder.push_plain(url.trim());
           }
         }
         "item" => {
@@ -433,12 +545,13 @@ fn process_body(
             while i < len && text[i] != ']' { i += 1; }
             if i < len { i += 1; }
           }
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           let marker = match list_stack.last_mut() {
             Some(ListKind::Enumerate(n)) => { *n += 1; format!("{}. ", n) }
             _ => "• ".to_string(),
           };
-          current_line.push_str(&marker);
+          let depth = list_stack.len().saturating_sub(1) as u8;
+          list_item_pending = Some((depth, marker));
         }
 
         // Inline math \( ... \)
@@ -447,30 +560,37 @@ fn process_body(
           i += adv;
           let rendered = render_math(&math, macros);
           if rendered.contains('\n') {
-            flush_line(&mut current_line, &mut out);
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
             let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
             out.push(Block::DisplayMath(lines));
           } else {
-            current_line.push_str(&rendered);
+            builder.push_plain(&rendered);
           }
         }
         // Display math \[ ... \]
         "[" => {
           let (math, adv) = read_until_str(&text, i, r"\]");
           i += adv;
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           let rendered = render_math(&math, macros);
           let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
           if !lines.is_empty() { out.push(Block::DisplayMath(lines)); }
         }
 
-        "\\" | "newline" | "hline" => flush_line(&mut current_line, &mut out),
+        "\\" | "newline" => flush_builder(&mut builder, &mut list_item_pending, &mut out),
+
+        // Table rules → horizontal separator block.
+        "hline" | "toprule" | "midrule" | "bottomrule" | "cline" => {
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
+          out.push(Block::Rule);
+        }
+
         "par" | "medskip" | "bigskip" | "smallskip" | "vspace" | "vskip" => {
           let _ = if cmd == "vspace" || cmd == "vskip" {
             let (_arg, skip) = read_braced_arg(&text, i);
             i += skip;
           };
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           out.push(Block::Blank);
         }
 
@@ -485,12 +605,12 @@ fn process_body(
                   def
                 };
                 if expanded.contains('\n') {
-                  flush_line(&mut current_line, &mut out);
+                  flush_builder(&mut builder, &mut list_item_pending, &mut out);
                   let lines: Vec<String> =
                     expanded.lines().map(|l| l.to_string()).collect();
                   out.push(Block::DisplayMath(lines));
                 } else {
-                  current_line.push_str(&expanded);
+                  builder.push_plain(&expanded);
                 }
               }
               1 => {
@@ -504,12 +624,12 @@ fn process_body(
                     substituted
                   };
                   if expanded.contains('\n') {
-                    flush_line(&mut current_line, &mut out);
+                    flush_builder(&mut builder, &mut list_item_pending, &mut out);
                     let lines: Vec<String> =
                       expanded.lines().map(|l| l.to_string()).collect();
                     out.push(Block::DisplayMath(lines));
                   } else {
-                    current_line.push_str(&expanded);
+                    builder.push_plain(&expanded);
                   }
                 }
               }
@@ -519,7 +639,7 @@ fn process_body(
             let (content, skip) = read_braced_arg(&text, i);
             i += skip;
             if content.contains(' ') || content.contains('\n') || content.contains(',') {
-              current_line.push_str(&content);
+              builder.push_plain(&content);
             }
           }
         }
@@ -533,7 +653,7 @@ fn process_body(
         i += 2;
         let (math, adv) = read_until_double_dollar(&text, i);
         i += adv;
-        flush_line(&mut current_line, &mut out);
+        flush_builder(&mut builder, &mut list_item_pending, &mut out);
         let rendered = render_math(&math, macros);
         let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
         if !lines.is_empty() { out.push(Block::DisplayMath(lines)); }
@@ -543,11 +663,11 @@ fn process_body(
         i += adv;
         let rendered = render_math(&math, macros);
         if rendered.contains('\n') {
-          flush_line(&mut current_line, &mut out);
+          flush_builder(&mut builder, &mut list_item_pending, &mut out);
           let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
           out.push(Block::DisplayMath(lines));
         } else {
-          current_line.push_str(&rendered);
+          builder.push_plain(&rendered);
         }
       }
       continue;
@@ -555,7 +675,7 @@ fn process_body(
 
     // Non-breaking space → regular space.
     if c == '~' {
-      current_line.push(' ');
+      builder.push_char(' ');
       i += 1;
       continue;
     }
@@ -563,11 +683,11 @@ fn process_body(
     // Dash ligatures: --- → em dash, -- → en dash.
     if c == '-' {
       if i + 2 < len && text[i + 1] == '-' && text[i + 2] == '-' {
-        current_line.push('—');
+        builder.push_char('—');
         i += 3;
         continue;
       } else if i + 1 < len && text[i + 1] == '-' {
-        current_line.push('–');
+        builder.push_char('–');
         i += 2;
         continue;
       }
@@ -581,20 +701,20 @@ fn process_body(
 
     if c == '\n' {
       if i + 1 < len && text[i + 1] == '\n' {
-        flush_line(&mut current_line, &mut out);
+        flush_builder(&mut builder, &mut list_item_pending, &mut out);
         out.push(Block::Blank);
         while i < len && text[i] == '\n' { i += 1; }
         continue;
       } else {
-        current_line.push(' ');
+        builder.push_char(' ');
       }
     } else {
-      current_line.push(c);
+      builder.push_char(c);
     }
     i += 1;
   }
 
-  flush_line(&mut current_line, &mut out);
+  flush_builder(&mut builder, &mut list_item_pending, &mut out);
   wrap_blocks(out)
 }
 
@@ -789,12 +909,54 @@ fn accent_char(accent: &str, base: &str) -> Option<char> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn flush_line(line: &mut String, out: &mut Vec<Block>) {
-  let trimmed = line.trim().to_string();
-  if !trimmed.is_empty() {
-    out.push(Block::Line(trimmed));
+fn flush_builder(
+  builder: &mut InlineBuilder,
+  list_item: &mut Option<(u8, String)>,
+  out: &mut Vec<Block>,
+) {
+  if builder.is_empty() && list_item.is_none() {
+    return;
   }
-  line.clear();
+  match (builder.finish(), list_item.take()) {
+    (Some(spans), Some((depth, marker))) => {
+      out.push(Block::ListItem { depth, marker, content: spans });
+    }
+    (Some(spans), None) => {
+      out.push(Block::StyledLine(spans));
+    }
+    (None, Some((depth, marker))) => {
+      let text = builder.take_plain();
+      let trimmed = text.trim().to_string();
+      if !trimmed.is_empty() {
+        out.push(Block::ListItem { depth, marker, content: vec![InlineSpan::plain(trimmed)] });
+      }
+    }
+    (None, None) => {
+      let text = builder.take_plain();
+      let trimmed = text.trim().to_string();
+      if !trimmed.is_empty() {
+        out.push(Block::Line(trimmed));
+      }
+    }
+  }
+}
+
+/// Parse the optional `[language=xxx]` argument on the first line of a lstlisting body.
+fn extract_lstlisting_lang(body: &str) -> Option<String> {
+  let first = body.trim_start().lines().next().unwrap_or("");
+  if first.starts_with('[') {
+    if let Some(pos) = first.find("language=") {
+      let rest = &first[pos + 9..];
+      let lang: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '+' || *c == '#')
+        .collect();
+      if !lang.is_empty() {
+        return Some(lang);
+      }
+    }
+  }
+  None
 }
 
 fn wrap_blocks(blocks: Vec<Block>) -> Vec<Block> {
