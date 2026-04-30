@@ -71,11 +71,12 @@ const THEOREM_ENVS: &[&str] = &[
 ];
 
 const FULL_SKIP_ENVS: &[&str] = &[
-  "tikzpicture", "algorithm", "algorithmic",
-  "minipage", "thebibliography", "pgfpicture",
+  "tikzpicture", "minipage", "pgfpicture",
 ];
 
 const CODE_ENVS: &[&str] = &["verbatim", "lstlisting", "Verbatim", "minted"];
+
+const ALGO_ENVS: &[&str] = &["algorithm", "algorithm2e", "algorithmic", "algorithmicx"];
 
 const CAPTION_ENVS: &[&str] = &[
   "figure", "figure*", "table", "table*", "wrapfigure", "subfigure",
@@ -195,6 +196,139 @@ fn extract_body(content: &str) -> String {
   content[start..end].to_string()
 }
 
+// ── Label map (two-pass cross-reference resolution) ──────────────────────────
+
+struct LabelMap {
+  /// label key → display string: "1.2", "Theorem 3", "(4)"
+  labels: HashMap<String, String>,
+  /// bibitem cite-key → citation number [1], [2], …
+  bibitems: HashMap<String, usize>,
+  /// ordered cite-keys for bibliography rendering
+  bibitem_order: Vec<String>,
+}
+
+/// Lightweight first-pass scanner that walks the document body collecting
+/// `\label`, `\bibitem`, and section/theorem/equation counter state so that
+/// `process_body` can resolve `\ref` and `\cite` to real numbers.
+fn collect_labels(body: &str) -> LabelMap {
+  let mut labels: HashMap<String, String> = HashMap::new();
+  let mut bibitems: HashMap<String, usize> = HashMap::new();
+  let mut bibitem_order: Vec<String> = Vec::new();
+
+  let chars: Vec<char> = body.chars().collect();
+  let len = chars.len();
+  let mut i = 0;
+
+  let mut sec: [u8; 3] = [0, 0, 0];
+  let mut thm_counters: HashMap<String, usize> = HashMap::new();
+  let mut eq_counter: usize = 0;
+  let mut env_stack: Vec<String> = Vec::new();
+  let mut bibitem_counter: usize = 0;
+
+  let display_math_envs = [
+    "equation", "equation*", "align", "align*", "aligned",
+    "gather", "gather*", "multline", "multline*", "eqnarray", "eqnarray*",
+  ];
+
+  while i < len {
+    if chars[i] == '%' && (i == 0 || chars[i - 1] != '\\') {
+      while i < len && chars[i] != '\n' { i += 1; }
+      continue;
+    }
+    if chars[i] != '\\' { i += 1; continue; }
+    if i + 1 >= len { i += 1; continue; }
+
+    let (cmd, consumed) = read_command(&chars, i + 1);
+    i += 1 + consumed;
+
+    match cmd.as_str() {
+      "begin" => {
+        let (env, skip) = read_braced_arg(&chars, i);
+        i += skip;
+        let env = env.trim().to_string();
+        if display_math_envs.contains(&env.as_str()) && !env.ends_with('*') {
+          eq_counter += 1;
+        }
+        if THEOREM_ENVS.contains(&env.as_str()) && env != "proof" {
+          let n = thm_counters.entry(env.clone()).or_insert(0);
+          *n += 1;
+        }
+        env_stack.push(env);
+      }
+      "end" => {
+        let (env, skip) = read_braced_arg(&chars, i);
+        i += skip;
+        env_stack.retain(|e| e != env.trim());
+      }
+      "section" => {
+        let (_, skip) = read_braced_arg(&chars, i); i += skip;
+        sec[0] += 1; sec[1] = 0; sec[2] = 0;
+      }
+      "subsection" => {
+        let (_, skip) = read_braced_arg(&chars, i); i += skip;
+        sec[1] += 1; sec[2] = 0;
+      }
+      "subsubsection" => {
+        let (_, skip) = read_braced_arg(&chars, i); i += skip;
+        sec[2] += 1;
+      }
+      "label" => {
+        let (key, skip) = read_braced_arg(&chars, i);
+        i += skip;
+        let key = key.trim().to_string();
+        let value = if let Some(env) = env_stack.last() {
+          if display_math_envs.contains(&env.as_str()) {
+            format!("({})", eq_counter)
+          } else if THEOREM_ENVS.contains(&env.as_str()) {
+            let n = thm_counters.get(env.as_str()).copied().unwrap_or(0);
+            format!("{} {}", capitalize(env), n)
+          } else {
+            // Default to section number.
+            match env_stack.iter().rev().find(|e| {
+              matches!(e.as_str(), "section" | "subsection" | "subsubsection")
+            }) {
+              _ => {
+                if sec[2] > 0 { format!("{}.{}.{}", sec[0], sec[1], sec[2]) }
+                else if sec[1] > 0 { format!("{}.{}", sec[0], sec[1]) }
+                else { format!("{}", sec[0]) }
+              }
+            }
+          }
+        } else {
+          if sec[2] > 0 { format!("{}.{}.{}", sec[0], sec[1], sec[2]) }
+          else if sec[1] > 0 { format!("{}.{}", sec[0], sec[1]) }
+          else { format!("{}", sec[0]) }
+        };
+        labels.insert(key, value);
+      }
+      "bibitem" => {
+        // Skip optional [label].
+        if i < len && chars[i] == '[' {
+          while i < len && chars[i] != ']' { i += 1; }
+          if i < len { i += 1; }
+        }
+        let (key, skip) = read_braced_arg(&chars, i);
+        i += skip;
+        let key = key.trim().to_string();
+        if !key.is_empty() && !bibitems.contains_key(&key) {
+          bibitem_counter += 1;
+          bibitems.insert(key.clone(), bibitem_counter);
+          bibitem_order.push(key);
+        }
+      }
+      _ => {
+        // Consume any braced argument for commands we don't track.
+        if i < len && chars[i] == '{' {
+          let (_, skip) = read_braced_arg(&chars, i);
+          i += skip;
+        }
+      }
+    }
+  }
+
+  LabelMap { labels, bibitems, bibitem_order }
+}
+
 // ── Main processor ────────────────────────────────────────────────────────────
 
 fn process(
@@ -202,6 +336,7 @@ fn process(
   macros: &HashMap<String, (usize, String)>,
   footnotes: &mut Vec<String>,
 ) -> Vec<Block> {
+  let label_map = collect_labels(body);
   let mut out: Vec<Block> = Vec::new();
 
   if let Some(abs) = extract_env(body, "abstract") {
@@ -214,7 +349,7 @@ fn process(
   }
 
   let mut list_stack: Vec<ListKind> = Vec::new();
-  out.extend(process_body(body, macros, footnotes, &mut list_stack));
+  out.extend(process_body(body, macros, footnotes, &mut list_stack, &label_map));
   out
 }
 
@@ -225,11 +360,18 @@ fn process_body(
   macros: &HashMap<String, (usize, String)>,
   footnotes: &mut Vec<String>,
   list_stack: &mut Vec<ListKind>,
+  label_map: &LabelMap,
 ) -> Vec<Block> {
   let mut out: Vec<Block> = Vec::new();
   let mut builder = InlineBuilder::new();
   // When Some, the next flush emits Block::ListItem instead of Block::Line/StyledLine.
   let mut list_item_pending: Option<(u8, String)> = None;
+  // Section counters: [section, subsection, subsubsection]
+  let mut sec: [u8; 3] = [0, 0, 0];
+  // Per-kind theorem counters (shared across all theorem environments).
+  let mut thm_counters: HashMap<String, usize> = HashMap::new();
+  // Equation counter — incremented for non-starred display math environments.
+  let mut eq_counter: usize = 0;
 
   let display_math_envs = [
     "equation", "equation*", "align", "align*", "aligned",
@@ -258,8 +400,13 @@ fn process_body(
         "end" => {
           let (env, skip) = read_braced_arg(&text, i);
           i += skip;
-          if matches!(env.trim(), "itemize" | "enumerate" | "description") {
-            list_stack.pop();
+          match env.trim() {
+            "itemize" | "enumerate" | "description" => { list_stack.pop(); }
+            "proof" => {
+              flush_builder(&mut builder, &mut list_item_pending, &mut out);
+              out.push(Block::Line("∎".to_string()));
+            }
+            _ => {}
           }
           continue;
         }
@@ -272,9 +419,11 @@ fn process_body(
             flush_builder(&mut builder, &mut list_item_pending, &mut out);
             let (math, adv) = read_until_end(&text, i, &env);
             i += adv;
+            let numbered = !env.ends_with('*');
+            let eq_num = if numbered { eq_counter += 1; Some(eq_counter) } else { None };
             let rendered = render_math(&math, macros);
             let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-            if !lines.is_empty() { out.push(Block::DisplayMath(lines)); }
+            if !lines.is_empty() { out.push(Block::DisplayMath { lines, num: eq_num }); }
             continue;
           }
 
@@ -287,7 +436,14 @@ fn process_body(
           if THEOREM_ENVS.contains(&env.as_str()) {
             flush_builder(&mut builder, &mut list_item_pending, &mut out);
             out.push(Block::Blank);
-            out.push(Block::Header { level: 3, text: capitalize(&env) });
+            let label = if env == "proof" {
+              "Proof".to_string()
+            } else {
+              let n = thm_counters.entry(env.clone()).or_insert(0);
+              *n += 1;
+              format!("{} {}", capitalize(&env), n)
+            };
+            out.push(Block::Header { level: 3, text: label });
             continue;
           }
 
@@ -336,6 +492,43 @@ fn process_body(
             continue;
           }
 
+          if ALGO_ENVS.contains(&env.as_str()) {
+            let (body_text, adv) = read_until_end(&text, i, &env);
+            i += adv;
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
+            // Outer \begin{algorithm} wrapper may contain a caption and an inner
+            // \begin{algorithmic} — extract the inner body if present.
+            let inner = extract_env(&body_text, "algorithmic")
+              .or_else(|| extract_env(&body_text, "algorithmicx"))
+              .unwrap_or_else(|| body_text.clone());
+            if let Some(cap) = extract_caption(&body_text) {
+              out.push(Block::Line(format!("[Algorithm: {}]", cap)));
+            }
+            let lines = parse_algorithmic_body(&inner);
+            if !lines.is_empty() {
+              out.push(Block::CodeBlock { lang: Some("algorithm".to_string()), lines });
+            }
+            continue;
+          }
+
+          if env == "thebibliography" {
+            // Skip the required {widestlabel} arg that follows \begin{thebibliography}.
+            if i < len && text[i] == '{' {
+              let (_, skip) = read_braced_arg(&text, i);
+              i += skip;
+            }
+            let (body_text, adv) = read_until_end(&text, i, &env);
+            i += adv;
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
+            out.push(Block::Blank);
+            out.push(Block::Header { level: 1, text: "References".to_string() });
+            out.push(Block::Blank);
+            for block in parse_bibliography(&body_text, label_map) {
+              out.push(block);
+            }
+            continue;
+          }
+
           if FULL_SKIP_ENVS.contains(&env.as_str()) {
             let (_body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
@@ -345,27 +538,48 @@ fn process_body(
           continue;
         }
 
-        "section" => {
+        "section" | "section*" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
+          let title = clean_inline(title.trim().to_string());
           flush_builder(&mut builder, &mut list_item_pending, &mut out);
+          let numbered = if cmd == "section" {
+            sec[0] += 1; sec[1] = 0; sec[2] = 0;
+            format!("{}  {}", sec[0], title)
+          } else {
+            title
+          };
           out.push(Block::Blank);
-          out.push(Block::Header { level: 1, text: title.trim().to_string() });
+          out.push(Block::Header { level: 1, text: numbered });
           out.push(Block::Blank);
         }
-        "subsection" => {
+        "subsection" | "subsection*" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
+          let title = clean_inline(title.trim().to_string());
           flush_builder(&mut builder, &mut list_item_pending, &mut out);
+          let numbered = if cmd == "subsection" {
+            sec[1] += 1; sec[2] = 0;
+            format!("{}.{}  {}", sec[0], sec[1], title)
+          } else {
+            title
+          };
           out.push(Block::Blank);
-          out.push(Block::Header { level: 2, text: title.trim().to_string() });
+          out.push(Block::Header { level: 2, text: numbered });
           out.push(Block::Blank);
         }
-        "subsubsection" | "paragraph" => {
+        "subsubsection" | "subsubsection*" | "paragraph" => {
           let (title, skip) = read_braced_arg(&text, i);
           i += skip;
+          let title = clean_inline(title.trim().to_string());
           flush_builder(&mut builder, &mut list_item_pending, &mut out);
-          out.push(Block::Header { level: 3, text: title.trim().to_string() });
+          let numbered = if cmd == "subsubsection" {
+            sec[2] += 1;
+            format!("{}.{}.{}  {}", sec[0], sec[1], sec[2], title)
+          } else {
+            title
+          };
+          out.push(Block::Header { level: 3, text: numbered });
         }
 
         // Inline styling — each variant sets the appropriate style flag.
@@ -495,15 +709,30 @@ fn process_body(
             while i < len && text[i] != ']' { i += 1; }
             if i < len { i += 1; }
           }
-          let (_key, skip) = read_braced_arg(&text, i);
+          let (key, skip) = read_braced_arg(&text, i);
           i += skip;
-          if cmd != "nocite" { builder.push_plain("[ref]"); }
+          if cmd != "nocite" {
+            let nums: Vec<String> = key.split(',').map(|k| {
+              label_map.bibitems.get(k.trim())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string())
+            }).collect();
+            builder.push_plain(&format!("[{}]", nums.join(", ")));
+          }
         }
-        "ref" | "eqref" | "cref" | "Cref" | "autoref" | "vref"
-        | "nameref" | "pageref" => {
-          let (_key, skip) = read_braced_arg(&text, i);
+        "ref" | "cref" | "Cref" | "autoref" | "vref" | "nameref" | "pageref" => {
+          let (key, skip) = read_braced_arg(&text, i);
           i += skip;
-          builder.push_plain("[§]");
+          let resolved = label_map.labels.get(key.trim())
+            .cloned().unwrap_or_else(|| "?".to_string());
+          builder.push_plain(&resolved);
+        }
+        "eqref" => {
+          let (key, skip) = read_braced_arg(&text, i);
+          i += skip;
+          let resolved = label_map.labels.get(key.trim())
+            .cloned().unwrap_or_else(|| "(?)".to_string());
+          builder.push_plain(&resolved);
         }
         "label" => {
           let (_key, skip) = read_braced_arg(&text, i);
@@ -562,7 +791,7 @@ fn process_body(
           if rendered.contains('\n') {
             flush_builder(&mut builder, &mut list_item_pending, &mut out);
             let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-            out.push(Block::DisplayMath(lines));
+            out.push(Block::DisplayMath { lines, num: None });
           } else {
             builder.push_plain(&rendered);
           }
@@ -574,7 +803,7 @@ fn process_body(
           flush_builder(&mut builder, &mut list_item_pending, &mut out);
           let rendered = render_math(&math, macros);
           let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-          if !lines.is_empty() { out.push(Block::DisplayMath(lines)); }
+          if !lines.is_empty() { out.push(Block::DisplayMath { lines, num: None }); }
         }
 
         "\\" | "newline" => flush_builder(&mut builder, &mut list_item_pending, &mut out),
@@ -608,7 +837,7 @@ fn process_body(
                   flush_builder(&mut builder, &mut list_item_pending, &mut out);
                   let lines: Vec<String> =
                     expanded.lines().map(|l| l.to_string()).collect();
-                  out.push(Block::DisplayMath(lines));
+                  out.push(Block::DisplayMath { lines, num: None });
                 } else {
                   builder.push_plain(&expanded);
                 }
@@ -627,7 +856,7 @@ fn process_body(
                     flush_builder(&mut builder, &mut list_item_pending, &mut out);
                     let lines: Vec<String> =
                       expanded.lines().map(|l| l.to_string()).collect();
-                    out.push(Block::DisplayMath(lines));
+                    out.push(Block::DisplayMath { lines, num: None });
                   } else {
                     builder.push_plain(&expanded);
                   }
@@ -656,7 +885,7 @@ fn process_body(
         flush_builder(&mut builder, &mut list_item_pending, &mut out);
         let rendered = render_math(&math, macros);
         let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-        if !lines.is_empty() { out.push(Block::DisplayMath(lines)); }
+        if !lines.is_empty() { out.push(Block::DisplayMath { lines, num: None }); }
       } else {
         i += 1;
         let (math, adv) = read_until_single_dollar(&text, i);
@@ -665,7 +894,7 @@ fn process_body(
         if rendered.contains('\n') {
           flush_builder(&mut builder, &mut list_item_pending, &mut out);
           let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-          out.push(Block::DisplayMath(lines));
+          out.push(Block::DisplayMath { lines, num: None });
         } else {
           builder.push_plain(&rendered);
         }
@@ -957,6 +1186,217 @@ fn extract_lstlisting_lang(body: &str) -> Option<String> {
     }
   }
   None
+}
+
+/// Parse an algorithmic/algorithmicx/algorithm2e body into plain-text pseudocode lines.
+/// Structural commands (`\If`, `\For`, `\While`, `\Function`, `\Procedure`) open indented
+/// blocks; their matching `\End*` commands close them. Leaf commands (`\State`, `\Return`,
+/// `\Require`, `\Ensure`, `\Comment`) emit a single line at the current indent level.
+fn parse_algorithmic_body(body: &str) -> Vec<String> {
+  let mut lines: Vec<String> = Vec::new();
+  let mut indent: usize = 0;
+  let chars: Vec<char> = body.chars().collect();
+  let len = chars.len();
+  let mut i = 0;
+
+  let pad = |n: usize| "  ".repeat(n);
+
+  while i < len {
+    // Skip whitespace between commands.
+    while i < len && (chars[i] == ' ' || chars[i] == '\t' || chars[i] == '\n') { i += 1; }
+    if i >= len { break; }
+
+    // Comments: % …
+    if chars[i] == '%' {
+      while i < len && chars[i] != '\n' { i += 1; }
+      continue;
+    }
+
+    if chars[i] != '\\' {
+      i += 1;
+      continue;
+    }
+
+    let (cmd, consumed) = read_command(&chars, i + 1);
+    i += 1 + consumed;
+
+    // Peek at optional [label] or {arg} immediately following.
+    let read_arg = |chars: &[char], i: &mut usize| -> String {
+      if *i >= chars.len() { return String::new(); }
+      if chars[*i] == '{' {
+        let (s, skip) = read_braced_arg(chars, *i);
+        *i += skip;
+        s
+      } else if chars[*i] == '[' {
+        let start = *i + 1;
+        *i += 1;
+        while *i < chars.len() && chars[*i] != ']' { *i += 1; }
+        let s: String = chars[start..*i].iter().collect();
+        if *i < chars.len() { *i += 1; }
+        s
+      } else {
+        String::new()
+      }
+    };
+
+    match cmd.to_ascii_lowercase().as_str() {
+      // Block-opening: structural commands with condition/name args.
+      "if" | "elsif" | "elseif" | "elif" => {
+        let cond = read_arg(&chars, &mut i);
+        lines.push(format!("{}if {}:", pad(indent), cond.trim()));
+        indent += 1;
+      }
+      "else" => {
+        indent = indent.saturating_sub(1);
+        lines.push(format!("{}else:", pad(indent)));
+        indent += 1;
+      }
+      "endif" | "endifx" => { indent = indent.saturating_sub(1); }
+
+      "for" | "foreach" | "forall" | "loop" => {
+        let var = read_arg(&chars, &mut i);
+        lines.push(format!("{}for {}:", pad(indent), var.trim()));
+        indent += 1;
+      }
+      "endfor" | "endforeach" | "endloop" => { indent = indent.saturating_sub(1); }
+
+      "while" => {
+        let cond = read_arg(&chars, &mut i);
+        lines.push(format!("{}while {}:", pad(indent), cond.trim()));
+        indent += 1;
+      }
+      "endwhile" => { indent = indent.saturating_sub(1); }
+
+      "repeat" => {
+        lines.push(format!("{}repeat:", pad(indent)));
+        indent += 1;
+      }
+      "until" => {
+        indent = indent.saturating_sub(1);
+        let cond = read_arg(&chars, &mut i);
+        lines.push(format!("{}until {}", pad(indent), cond.trim()));
+      }
+
+      "function" | "procedure" => {
+        let name = read_arg(&chars, &mut i);
+        let params = read_arg(&chars, &mut i);
+        let kw = capitalize(&cmd);
+        lines.push(format!("{}{}({}):", pad(indent), name.trim(), params.trim()));
+        let _ = kw;
+        indent += 1;
+      }
+      "endfunction" | "endprocedure" => { indent = indent.saturating_sub(1); }
+
+      // Leaf: emit a single line.
+      "state" | "statex" => {
+        let content = read_arg(&chars, &mut i);
+        if !content.trim().is_empty() {
+          lines.push(format!("{}{}", pad(indent), content.trim()));
+        }
+      }
+      "return" => {
+        let content = read_arg(&chars, &mut i);
+        lines.push(format!("{}return {}", pad(indent), content.trim()));
+      }
+      "require" | "input" => {
+        let content = read_arg(&chars, &mut i);
+        lines.push(format!("{}Input: {}", pad(indent), content.trim()));
+      }
+      "ensure" | "output" => {
+        let content = read_arg(&chars, &mut i);
+        lines.push(format!("{}Output: {}", pad(indent), content.trim()));
+      }
+      "comment" | "linecomment" => {
+        let content = read_arg(&chars, &mut i);
+        if let Some(last) = lines.last_mut() {
+          last.push_str(&format!("  // {}", content.trim()));
+        } else {
+          lines.push(format!("{}// {}", pad(indent), content.trim()));
+        }
+      }
+      "print" | "printline" => {
+        let content = read_arg(&chars, &mut i);
+        lines.push(format!("{}print {}", pad(indent), content.trim()));
+      }
+      // Ignore structural/formatting commands that don't affect content.
+      "algorithmic" | "algorithmicx" | "begin" | "end"
+      | "algrenewcommand" | "algnewcommand" | "algblock"
+      | "algrequire" | "algensure" | "algsetblock"
+      | "caption" | "label" | "vspace" | "hspace" => {}
+      _ => {}
+    }
+  }
+
+  lines
+}
+
+/// Render a `\begin{thebibliography}` body into numbered `Block::Line` entries.
+/// Each `\bibitem{key}` starts a new entry; its number comes from `label_map.bibitems`.
+fn parse_bibliography(body: &str, label_map: &LabelMap) -> Vec<Block> {
+  let mut out: Vec<Block> = Vec::new();
+  // Split on \bibitem occurrences.
+  let mut rest = body.trim();
+  while let Some(pos) = rest.find(r"\bibitem") {
+    rest = &rest[pos + 8..];
+    // Skip optional [label].
+    if rest.starts_with('[') {
+      if let Some(end) = rest.find(']') {
+        rest = &rest[end + 1..];
+      }
+    }
+    // Read {key}.
+    if !rest.starts_with('{') { continue; }
+    if let Some(end) = rest.find('}') {
+      let key = rest[1..end].trim().to_string();
+      rest = &rest[end + 1..];
+      let num = label_map.bibitems.get(key.as_str()).copied().unwrap_or(0);
+      // Content runs until the next \bibitem or end of body.
+      let content_end = rest.find(r"\bibitem").unwrap_or(rest.len());
+      let raw = rest[..content_end].trim();
+      // Strip LaTeX commands: remove \ sequences and braces for clean plain text.
+      let clean = clean_bib_entry(raw);
+      if !clean.is_empty() {
+        out.push(Block::Line(format!("[{}] {}", num, clean)));
+      }
+    }
+  }
+  out
+}
+
+/// Strip common LaTeX markup from a bibliography entry for plain-text display.
+fn clean_bib_entry(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let chars: Vec<char> = s.chars().collect();
+  let len = chars.len();
+  let mut i = 0;
+  while i < len {
+    if chars[i] == '%' {
+      while i < len && chars[i] != '\n' { i += 1; }
+      continue;
+    }
+    if chars[i] == '\\' && i + 1 < len {
+      let (cmd, consumed) = read_command(&chars, i + 1);
+      i += 1 + consumed;
+      // For known decorators that wrap text, emit the text.
+      if i < len && chars[i] == '{' {
+        let (content, skip) = read_braced_arg(&chars, i);
+        i += skip;
+        match cmd.as_str() {
+          "emph" | "textbf" | "textit" | "texttt" | "textrm" | "text"
+          | "bibinfo" | "BIBfitem" | "newblock" => {
+            out.push_str(&content);
+          }
+          _ => { out.push_str(&content); }
+        }
+      }
+      continue;
+    }
+    if chars[i] == '{' || chars[i] == '}' { i += 1; continue; }
+    out.push(chars[i]);
+    i += 1;
+  }
+  // Collapse whitespace.
+  out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn wrap_blocks(blocks: Vec<Block>) -> Vec<Block> {

@@ -1,9 +1,18 @@
 use doc_model::{Block, VisualLine, VisualLineKind, build_visual_lines};
 
+pub const TOC_WIDTH: usize = 28;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
   Normal,
   Search,
+}
+
+/// Paper-level metadata shown in the header bar.
+#[derive(Debug, Clone)]
+pub struct PaperMeta {
+  pub title: String,
+  pub authors: String,
 }
 
 pub struct Reader {
@@ -19,11 +28,16 @@ pub struct Reader {
   pub search_matches: Vec<usize>,
   pub search_idx: usize,
   pub mode: Mode,
+  /// Back-navigation stack: (offset, cursor_y) entries pushed before jumps.
+  pub nav_history: Vec<(usize, usize)>,
+  /// Optional paper metadata shown in the header bar.
+  pub meta: Option<PaperMeta>,
 }
 
 impl Reader {
   pub fn new(blocks: Vec<Block>, width: usize, height: usize) -> Self {
-    let visual_lines = build_visual_lines(&blocks, width);
+    let cw = content_width_for(width, false);
+    let visual_lines = build_visual_lines(&blocks, cw);
     let sections = build_sections(&visual_lines);
     Self {
       blocks,
@@ -38,23 +52,66 @@ impl Reader {
       search_matches: Vec::new(),
       search_idx: 0,
       mode: Mode::Normal,
+      nav_history: Vec::new(),
+      meta: None,
     }
+  }
+
+  /// Effective text column width after subtracting the TOC panel (if visible).
+  pub fn content_width(&self) -> usize {
+    content_width_for(self.width, self.toc_visible)
   }
 
   pub fn resize(&mut self, width: usize, height: usize) {
     self.width = width;
     self.height = height;
-    self.visual_lines = build_visual_lines(&self.blocks, width);
+    let cw = self.content_width();
+    self.visual_lines = build_visual_lines(&self.blocks, cw);
     self.sections = build_sections(&self.visual_lines);
-    // Clamp position to new bounds.
-    let max_offset = self.visual_lines.len().saturating_sub(1);
-    self.offset = self.offset.min(max_offset);
-    let content_height = height.saturating_sub(2); // status + search lines
-    self.cursor_y = self.cursor_y.min(content_height.saturating_sub(1));
+    self.clamp_position();
   }
 
   pub fn toggle_toc(&mut self) {
     self.toc_visible = !self.toc_visible;
+    let cw = self.content_width();
+    self.visual_lines = build_visual_lines(&self.blocks, cw);
+    self.sections = build_sections(&self.visual_lines);
+    self.clamp_position();
+  }
+
+  /// Clamp offset and cursor_y to stay within current document bounds.
+  pub fn clamp_position(&mut self) {
+    let total = self.visual_lines.len();
+    let ch = self.content_height();
+    if total == 0 {
+      self.offset = 0;
+      self.cursor_y = 0;
+      return;
+    }
+    let max_offset = total.saturating_sub(ch).max(0);
+    self.offset = self.offset.min(max_offset);
+    let max_cursor = ch.saturating_sub(1).min(total.saturating_sub(1 + self.offset));
+    self.cursor_y = self.cursor_y.min(max_cursor);
+  }
+
+  /// Push current position onto the back-navigation stack before a jump.
+  pub fn push_nav_mark(&mut self) {
+    let pos = (self.offset, self.cursor_y);
+    if self.nav_history.last() != Some(&pos) {
+      self.nav_history.push(pos);
+      // Cap history at 50 entries to avoid unbounded growth.
+      if self.nav_history.len() > 50 {
+        self.nav_history.remove(0);
+      }
+    }
+  }
+
+  /// Return to the previous position in the back-navigation stack.
+  pub fn nav_back(&mut self) {
+    if let Some((offset, cursor_y)) = self.nav_history.pop() {
+      self.offset = offset;
+      self.cursor_y = cursor_y;
+    }
   }
 
   /// Index into `sections` of the last section header at or above the current line.
@@ -72,11 +129,10 @@ impl Reader {
   }
 
   pub fn content_height(&self) -> usize {
-    // Reserve 1 row for status line; 1 more when in search mode.
-    match self.mode {
-      Mode::Normal => self.height.saturating_sub(1),
-      Mode::Search => self.height.saturating_sub(2),
-    }
+    let header = if self.meta.is_some() { 1 } else { 0 };
+    let status = 1;
+    let search = if self.mode == Mode::Search { 1 } else { 0 };
+    self.height.saturating_sub(header + status + search)
   }
 
   pub fn update_search_matches(&mut self) {
@@ -101,6 +157,16 @@ impl Reader {
     let line = self.search_matches[idx];
     self.offset = line;
     self.cursor_y = 0;
+  }
+}
+
+/// Compute text column width given terminal width and TOC visibility.
+fn content_width_for(terminal_width: usize, toc_visible: bool) -> usize {
+  if toc_visible {
+    // +1 for the border column.
+    terminal_width.saturating_sub(TOC_WIDTH + 1)
+  } else {
+    terminal_width
   }
 }
 

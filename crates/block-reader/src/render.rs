@@ -7,7 +7,7 @@ use ratatui::{
   widgets::{Block, Borders, Paragraph},
 };
 
-use crate::state::{Mode, Reader};
+use crate::state::{Mode, Reader, TOC_WIDTH};
 
 // ── Accent palette ────────────────────────────────────────────────────────────
 
@@ -19,13 +19,16 @@ const MONO_COLOR: Color = Color::Rgb(180, 160, 120);
 const CODE_BG: Color = Color::Rgb(20, 25, 35);
 const CODE_FG: Color = Color::Rgb(160, 200, 180);
 const RULE_COLOR: Color = Color::Rgb(55, 65, 80);
-const TOC_WIDTH: u16 = 28;
+const HEADER_BG: Color = Color::Rgb(12, 17, 27);
 
 pub fn draw(frame: &mut Frame, reader: &Reader) {
   let area = frame.area();
-  let (toc_area, content_area, status_area, search_area) =
-    split_layout(area, &reader.mode, reader.toc_visible);
+  let (header_area, toc_area, content_area, status_area, search_area) =
+    split_layout(area, reader);
 
+  if let Some(ha) = header_area {
+    draw_header(frame, reader, ha);
+  }
   if let Some(ta) = toc_area {
     draw_toc(frame, reader, ta);
   }
@@ -38,20 +41,31 @@ pub fn draw(frame: &mut Frame, reader: &Reader) {
 
 fn split_layout(
   area: Rect,
-  mode: &Mode,
-  toc_visible: bool,
-) -> (Option<Rect>, Rect, Rect, Option<Rect>) {
-  let (toc_area, right) = if toc_visible {
-    let h = Layout::default()
-      .direction(Direction::Horizontal)
-      .constraints([Constraint::Length(TOC_WIDTH), Constraint::Min(1)])
+  reader: &Reader,
+) -> (Option<Rect>, Option<Rect>, Rect, Rect, Option<Rect>) {
+  // Optional 1-row header at the very top.
+  let (header_area, below_header) = if reader.meta.is_some() {
+    let v = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints([Constraint::Length(1), Constraint::Min(1)])
       .split(area);
-    (Some(h[0]), h[1])
+    (Some(v[0]), v[1])
   } else {
     (None, area)
   };
 
-  let (content_area, status_area, search_area) = match mode {
+  // Optional TOC panel on the left.
+  let (toc_area, right) = if reader.toc_visible {
+    let h = Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Length(TOC_WIDTH as u16), Constraint::Min(1)])
+      .split(below_header);
+    (Some(h[0]), h[1])
+  } else {
+    (None, below_header)
+  };
+
+  let (content_area, status_area, search_area) = match reader.mode {
     Mode::Normal => {
       let v = Layout::default()
         .direction(Direction::Vertical)
@@ -68,7 +82,19 @@ fn split_layout(
     }
   };
 
-  (toc_area, content_area, status_area, search_area)
+  (header_area, toc_area, content_area, status_area, search_area)
+}
+
+fn draw_header(frame: &mut Frame, reader: &Reader, area: Rect) {
+  let Some(meta) = &reader.meta else { return };
+  let w = area.width as usize;
+  let title = &meta.title;
+  let sep = if meta.authors.is_empty() { "" } else { "  " };
+  let raw = format!(" {}{}{}", title, sep, meta.authors);
+  let truncated = toc_trunc(&raw, w);
+  let header = Paragraph::new(truncated)
+    .style(Style::default().bg(HEADER_BG).fg(BABY_BLUE));
+  frame.render_widget(header, area);
 }
 
 fn draw_content(frame: &mut Frame, reader: &Reader, area: Rect) {

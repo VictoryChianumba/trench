@@ -1,4 +1,5 @@
 mod nav;
+mod progress;
 mod render;
 mod state;
 
@@ -13,7 +14,13 @@ use ratatui::backend::CrosstermBackend;
 use state::{Mode, Reader};
 use std::io;
 
-pub fn run(blocks: Vec<Block>) -> Result<(), Box<dyn std::error::Error>> {
+pub use state::PaperMeta;
+
+pub fn run(
+  blocks: Vec<Block>,
+  meta: Option<PaperMeta>,
+  progress_key: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
   enable_raw_mode()?;
   let mut stdout = io::stdout();
   execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -22,8 +29,25 @@ pub fn run(blocks: Vec<Block>) -> Result<(), Box<dyn std::error::Error>> {
 
   let size = terminal.size()?;
   let mut reader = Reader::new(blocks, size.width as usize, size.height as usize);
+  reader.meta = meta;
+
+  // Restore reading progress if available.
+  if let Some(ref key) = progress_key {
+    let map = progress::load();
+    if let Some(p) = map.get(key) {
+      let max_offset = reader.total_lines().saturating_sub(1);
+      reader.offset = p.offset.min(max_offset);
+    }
+  }
 
   let result = event_loop(&mut terminal, &mut reader);
+
+  // Persist reading progress on clean exit.
+  if let Some(ref key) = progress_key {
+    let mut map = progress::load();
+    map.insert(key.clone(), progress::ReaderProgress { offset: reader.offset });
+    progress::save(&map);
+  }
 
   disable_raw_mode()?;
   execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -70,6 +94,7 @@ fn handle_normal(reader: &mut Reader, code: KeyCode, mods: KeyModifiers) -> bool
     KeyCode::Char(']') => reader.jump_next_section(),
     KeyCode::Char('[') => reader.jump_prev_section(),
     KeyCode::Char('t') => reader.toggle_toc(),
+    KeyCode::Char('o') if mods.contains(KeyModifiers::CONTROL) => reader.nav_back(),
     _ => {}
   }
   false

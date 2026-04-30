@@ -43,7 +43,8 @@ pub enum Block {
   /// A single line of prose, already word-wrapped by the producer.
   Line(String),
   /// A display math equation rendered as multiple Unicode lines, treated as one unit.
-  DisplayMath(Vec<String>),
+  /// `num` carries the equation number for numbered environments (equation, align, etc.).
+  DisplayMath { lines: Vec<String>, num: Option<usize> },
   /// A section header. level: 1=section, 2=subsection, 3=subsubsection/paragraph.
   Header { level: u8, text: String },
   /// A matrix rendered as a grid of cells (row-major).
@@ -128,11 +129,23 @@ pub fn build_visual_lines(blocks: &[Block], terminal_width: usize) -> Vec<Visual
         });
       }
 
-      Block::DisplayMath(lines) => {
+      Block::DisplayMath { lines, num } => {
         let block_width = lines.iter().map(|l| visual_width(l)).max().unwrap_or(0);
         let n = lines.len();
         for (i, line) in lines.iter().enumerate() {
-          let centered = center_line(line, block_width, terminal_width);
+          let mut centered = center_line(line, block_width, terminal_width);
+          // Right-justify the equation number on the last line.
+          if i == n - 1 {
+            if let Some(eq_num) = num {
+              let tag = format!("({})", eq_num);
+              let used = visual_width(&centered);
+              let avail = terminal_width.saturating_sub(tag.len());
+              if used < avail {
+                centered.push_str(&" ".repeat(avail - used));
+              }
+              centered.push_str(&tag);
+            }
+          }
           out.push(VisualLine {
             block_idx,
             line_in_block: i,

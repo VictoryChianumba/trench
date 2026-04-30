@@ -276,8 +276,11 @@ version = "0.1.0"
 dependencies = [
  "arxiv-render",
  "crossterm",
+ "dirs 5.0.1",
  "doc-model",
  "ratatui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3948,7 +3951,6 @@ name = "trench"
 version = "0.1.19"
 dependencies = [
  "arboard",
- "arxiv-render",
  "base64 0.22.1",
  "chat",
  "chrono",

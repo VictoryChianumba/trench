@@ -30,7 +30,7 @@ fn main() {
   let blocks = parse::to_blocks(sources);
   eprintln!("{} blocks — launching reader ...", blocks.len());
 
-  if let Err(e) = block_reader::run(blocks) {
+  if let Err(e) = block_reader::run(blocks, None, Some(id)) {
     eprintln!("reader error: {e}");
     std::process::exit(1);
   }

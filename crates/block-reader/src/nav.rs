@@ -84,6 +84,7 @@ impl Reader {
   pub fn confirm_search(&mut self) {
     self.mode = Mode::Normal;
     if !self.search_matches.is_empty() {
+      self.push_nav_mark();
       let idx = self.search_idx;
       self.jump_to_match(idx);
     }
@@ -97,16 +98,20 @@ impl Reader {
 
   pub fn jump_next_section(&mut self) {
     let cur = self.current_line();
-    if let Some(s) = self.sections.iter().find(|s| s.0 > cur) {
-      self.offset = s.0;
+    let target = self.sections.iter().find(|s| s.0 > cur).map(|s| s.0);
+    if let Some(line) = target {
+      self.push_nav_mark();
+      self.offset = line;
       self.cursor_y = 0;
     }
   }
 
   pub fn jump_prev_section(&mut self) {
     let cur = self.current_line();
-    if let Some(s) = self.sections.iter().rfind(|s| s.0 < cur) {
-      self.offset = s.0;
+    let target = self.sections.iter().rfind(|s| s.0 < cur).map(|s| s.0);
+    if let Some(line) = target {
+      self.push_nav_mark();
+      self.offset = line;
       self.cursor_y = 0;
     }
   }
