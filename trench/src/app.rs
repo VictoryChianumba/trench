@@ -164,6 +164,12 @@ pub enum FocusedReader {
   Secondary,
 }
 
+/// One open paper inside a reader pane.
+pub struct ReaderTab {
+  pub title: String,
+  pub editor: cli_text_reader::Editor,
+}
+
 /// Tracks a pane's current screen position and open state.
 #[derive(Clone)]
 pub struct PaneInfo {
@@ -266,7 +272,7 @@ pub struct App {
   pub config: Config,
 
   // Active theme (mirrors config.theme; applied live each frame)
-  pub active_theme: crate::theme::ThemeId,
+  pub active_theme: ui_theme::ThemeId,
 
   // Settings screen
   pub settings_field: usize,
@@ -275,6 +281,10 @@ pub struct App {
   pub settings_github_token: String,
   pub settings_s2_key: String,
   pub settings_save_time: Option<std::time::Instant>,
+  pub theme_picker_active: bool,
+  pub theme_picker_cursor: usize,
+  pub theme_picker_scroll: usize,
+  pub theme_picker_original: Option<ui_theme::ThemeId>,
 
   // Sources popup
   pub sources_cursor: usize,
@@ -293,13 +303,15 @@ pub struct App {
   pub chat_fullscreen: bool,
   pub chat_at_top: bool,
 
-  // Embedded reader (hygg-reader)
-  pub reader: Option<cli_text_reader::Editor>,
+  // Embedded reader (hygg-reader) — tabbed
+  pub reader_tabs: Vec<ReaderTab>,
+  pub reader_active_tab: usize,
   pub reader_active: bool,
 
-  // Floating reader popup (A1 — Ldr+Enter)
+  // Floating reader popup (A1 — Ldr+Enter) — not tabbed, separate slot
   pub reader_popup_active: bool,
   pub reader_popup_rx: Option<Receiver<Result<Vec<String>, String>>>,
+  pub reader_popup_editor: Option<cli_text_reader::Editor>,
 
   // Secondary split view (A2 — Ldr+v cycles three states)
   // State 1: normal feed (reader_split_active=false, reader_dual_active=false)
@@ -307,9 +319,13 @@ pub struct App {
   // State 3: reader 50% | reader 50% + persistent bottom pane (reader_dual_active=true)
   pub reader_split_active: bool,
   pub reader_dual_active: bool,
-  pub reader_secondary: Option<cli_text_reader::Editor>,
+  pub reader_secondary_tabs: Vec<ReaderTab>,
+  pub reader_secondary_active_tab: usize,
   pub focused_reader: FocusedReader,
   pub fulltext_for_secondary: bool,
+  pub fulltext_new_tab: bool,
+  // True while waiting for [1]/[2] to choose which reader window gets a new tab.
+  pub tab_window_prompt_active: bool,
   // Bottom pane in State 3 (summoned by Ldr+v, dismissed by q/Esc)
   pub reader_bottom_open: bool,      // pane is visible
   pub reader_bottom_focused: bool,   // pane has keyboard focus
@@ -416,13 +432,17 @@ impl App {
       details_max_scroll: usize::MAX,
       details_last_item_url: None,
       config: Config::default(),
-      active_theme: crate::theme::ThemeId::Dark,
+      active_theme: ui_theme::ThemeId::Dark,
       settings_field: 0,
       settings_editing: false,
       settings_edit_buf: String::new(),
       settings_github_token: String::new(),
       settings_s2_key: String::new(),
       settings_save_time: None,
+      theme_picker_active: false,
+      theme_picker_cursor: 0,
+      theme_picker_scroll: 0,
+      theme_picker_original: None,
       sources_cursor: 0,
       sources_input: String::new(),
       sources_input_active: false,
@@ -434,15 +454,20 @@ impl App {
       chat_active: false,
       chat_fullscreen: false,
       chat_at_top: false,
-      reader: None,
+      reader_tabs: Vec::new(),
+      reader_active_tab: 0,
       reader_active: false,
       reader_popup_active: false,
       reader_popup_rx: None,
+      reader_popup_editor: None,
       reader_split_active: false,
       reader_dual_active: false,
-      reader_secondary: None,
+      reader_secondary_tabs: Vec::new(),
+      reader_secondary_active_tab: 0,
       focused_reader: FocusedReader::Primary,
       fulltext_for_secondary: false,
+      fulltext_new_tab: false,
+      tab_window_prompt_active: false,
       reader_bottom_open: false,
       reader_bottom_focused: false,
       reader_bottom_details: false,
@@ -1851,6 +1876,130 @@ mod tests {
         source_name: String::new(),
       },
     ]
+  }
+}
+
+// ── Reader tab accessors ──────────────────────────────────────────────────────
+
+impl App {
+  pub fn reader_editor_mut(&mut self) -> Option<&mut cli_text_reader::Editor> {
+    self.reader_tabs.get_mut(self.reader_active_tab).map(|t| &mut t.editor)
+  }
+
+  pub fn reader_secondary_editor_mut(
+    &mut self,
+  ) -> Option<&mut cli_text_reader::Editor> {
+    self
+      .reader_secondary_tabs
+      .get_mut(self.reader_secondary_active_tab)
+      .map(|t| &mut t.editor)
+  }
+
+  pub fn reader_push_tab(&mut self, title: String, editor: cli_text_reader::Editor) {
+    self.reader_tabs.push(ReaderTab { title, editor });
+    self.reader_active_tab = self.reader_tabs.len() - 1;
+    self.reader_active = true;
+  }
+
+  pub fn reader_secondary_push_tab(
+    &mut self,
+    title: String,
+    editor: cli_text_reader::Editor,
+  ) {
+    self.reader_secondary_tabs.push(ReaderTab { title, editor });
+    self.reader_secondary_active_tab = self.reader_secondary_tabs.len() - 1;
+  }
+
+  pub fn reader_replace_active_tab(
+    &mut self,
+    title: String,
+    editor: cli_text_reader::Editor,
+  ) {
+    if self.reader_tabs.is_empty() {
+      self.reader_push_tab(title, editor);
+    } else {
+      self.reader_tabs[self.reader_active_tab] = ReaderTab { title, editor };
+      self.reader_active = true;
+    }
+  }
+
+  pub fn reader_secondary_replace_active_tab(
+    &mut self,
+    title: String,
+    editor: cli_text_reader::Editor,
+  ) {
+    if self.reader_secondary_tabs.is_empty() {
+      self.reader_secondary_push_tab(title, editor);
+    } else {
+      self.reader_secondary_tabs[self.reader_secondary_active_tab] =
+        ReaderTab { title, editor };
+    }
+  }
+
+  /// Close the active primary tab. Returns true if the pane is now empty.
+  pub fn reader_close_active_tab(&mut self) -> bool {
+    if self.reader_tabs.is_empty() {
+      return true;
+    }
+    self.reader_tabs.remove(self.reader_active_tab);
+    if self.reader_tabs.is_empty() {
+      self.reader_active_tab = 0;
+      self.reader_active = false;
+      return true;
+    }
+    self.reader_active_tab = self.reader_active_tab.saturating_sub(1);
+    false
+  }
+
+  /// Close the active secondary tab. Returns true if the pane is now empty.
+  pub fn reader_secondary_close_active_tab(&mut self) -> bool {
+    if self.reader_secondary_tabs.is_empty() {
+      return true;
+    }
+    self.reader_secondary_tabs.remove(self.reader_secondary_active_tab);
+    if self.reader_secondary_tabs.is_empty() {
+      self.reader_secondary_active_tab = 0;
+      return true;
+    }
+    self.reader_secondary_active_tab =
+      self.reader_secondary_active_tab.saturating_sub(1);
+    false
+  }
+
+  pub fn reader_prev_tab(&mut self) {
+    match self.focused_reader {
+      FocusedReader::Primary => {
+        let n = self.reader_tabs.len();
+        if n > 0 {
+          self.reader_active_tab = (self.reader_active_tab + n - 1) % n;
+        }
+      }
+      FocusedReader::Secondary => {
+        let n = self.reader_secondary_tabs.len();
+        if n > 0 {
+          self.reader_secondary_active_tab =
+            (self.reader_secondary_active_tab + n - 1) % n;
+        }
+      }
+    }
+  }
+
+  pub fn reader_next_tab(&mut self) {
+    match self.focused_reader {
+      FocusedReader::Primary => {
+        let n = self.reader_tabs.len();
+        if n > 0 {
+          self.reader_active_tab = (self.reader_active_tab + 1) % n;
+        }
+      }
+      FocusedReader::Secondary => {
+        let n = self.reader_secondary_tabs.len();
+        if n > 0 {
+          self.reader_secondary_active_tab =
+            (self.reader_secondary_active_tab + 1) % n;
+        }
+      }
+    }
   }
 }
 

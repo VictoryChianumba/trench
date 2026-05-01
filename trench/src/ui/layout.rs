@@ -11,7 +11,8 @@ use ratatui::{
 
 use super::repo_viewer::draw_repo_viewer;
 use crate::app::{
-  App, AppView, DiscoverResult, FeedTab, PaneId, SourcesDetectState,
+  App, AppView, DiscoverResult, FeedTab, FocusedReader, PaneId, ReaderTab,
+  SourcesDetectState,
 };
 use crate::models::{ContentType, SignalLevel, SourcePlatform, WorkflowState};
 
@@ -47,6 +48,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
   if app.help_active {
     draw_help_overlay(frame, app);
   }
+  if app.theme_picker_active {
+    draw_theme_picker(frame, app);
+  }
   let total_ms = t_total.elapsed().as_millis();
   if total_ms > 8 {
     log::debug!("ui::draw total: {}ms", total_ms);
@@ -55,6 +59,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_feed(frame: &mut Frame, app: &mut App) {
   let area = frame.area();
+  let theme = app.active_theme.theme();
   let margin = area.width / 20;
   let title_h = title_bar_height(area.width);
 
@@ -101,7 +106,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     let chat_rect = Some(rows[2]);
     if let Some(chat_ui) = app.chat_ui.as_mut() {
       let t = std::time::Instant::now();
-      chat_ui.draw(frame, rows[2]);
+      chat_ui.draw(frame, rows[2], &theme);
       log::debug!("chat_ui.draw (top): {}ms", t.elapsed().as_millis());
     }
 
@@ -142,7 +147,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     if chat_needs_panel {
       if let Some(chat_ui) = app.chat_ui.as_mut() {
         let t = std::time::Instant::now();
-        chat_ui.draw(frame, rows[3]);
+        chat_ui.draw(frame, rows[3], &theme);
         log::debug!("chat_ui.draw (bottom): {}ms", t.elapsed().as_millis());
       }
     }
@@ -156,7 +161,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
   // Session-list / new-session overlay: rendered last so it floats on top.
   if app.chat_active && !chat_needs_panel {
     if let Some(chat_ui) = app.chat_ui.as_mut() {
-      chat_ui.draw_overlay(frame, area);
+      chat_ui.draw_overlay(frame, area, &theme);
     }
   }
 
@@ -314,25 +319,45 @@ struct MainRowRects {
 }
 
 fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
-  let t = app.active_theme.theme();
+  let theme = app.active_theme.theme();
+  let t = theme;
   // ── A2 State 3: dual-reader (left 50% | right 50%) ──────────────────────
   if app.reader_dual_active && app.reader_active {
     let inner_w = area.width.saturating_sub(2);
     let right_w = (inner_w / 2).max(1);
     let (left_rect, right_rect) =
       draw_horiz_split_box(frame, area, right_w, "Reader", "Reader", &t);
-    if let Some(editor) = app.reader.as_mut() {
-      editor.update_layout(left_rect);
-      cli_text_reader::draw_editor(frame, left_rect, editor);
+    {
+      let rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(left_rect);
+      let focused = app.focused_reader == FocusedReader::Primary;
+      draw_reader_tab_bar(frame, rows[0], &app.reader_tabs, app.reader_active_tab, focused, &t);
+      if let Some(editor) = app.reader_editor_mut() {
+        editor.update_layout(rows[1]);
+        cli_text_reader::draw_editor(frame, rows[1], editor);
+      }
     }
-    if let Some(editor) = app.reader_secondary.as_mut() {
-      editor.update_layout(right_rect);
-      cli_text_reader::draw_editor(frame, right_rect, editor);
-    } else {
-      let hint = Paragraph::new("No paper loaded\n\nLdr+v → open feed · Enter to load")
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(t.text_dim));
-      frame.render_widget(hint, right_rect);
+    {
+      let rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(right_rect);
+      let focused = app.focused_reader == FocusedReader::Secondary;
+      draw_reader_tab_bar(
+        frame,
+        rows[0],
+        &app.reader_secondary_tabs,
+        app.reader_secondary_active_tab,
+        focused,
+        &t,
+      );
+      if let Some(editor) = app.reader_secondary_editor_mut() {
+        editor.update_layout(rows[1]);
+        cli_text_reader::draw_editor(frame, rows[1], editor);
+      } else {
+        let hint = Paragraph::new("No paper loaded\n\nLdr+v → open feed · Enter to load")
+          .alignment(Alignment::Center)
+          .style(Style::default().fg(t.text_dim));
+        frame.render_widget(hint, rows[1]);
+      }
     }
     return MainRowRects {
       feed: None,
@@ -350,9 +375,14 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     let (feed_rect, reader_rect) =
       draw_horiz_split_box(frame, area, reader_w, "Feed", "Reader", &t);
     draw_feed_pane(frame, app, feed_rect);
-    if let Some(editor) = app.reader.as_mut() {
-      editor.update_layout(reader_rect);
-      cli_text_reader::draw_editor(frame, reader_rect, editor);
+    {
+      let rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(reader_rect);
+      draw_reader_tab_bar(frame, rows[0], &app.reader_tabs, app.reader_active_tab, true, &t);
+      if let Some(editor) = app.reader_editor_mut() {
+        editor.update_layout(rows[1]);
+        cli_text_reader::draw_editor(frame, rows[1], editor);
+      }
     }
     if app.narrow_feed_details_open {
       draw_narrow_feed_details_popup(frame, app, reader_rect);
@@ -368,10 +398,12 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
 
   // ── Reader: always full-width or 60/40 split, regardless of terminal width ─
   if app.reader_active && !app.notes_active {
-    if let Some(editor) = app.reader.as_mut() {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    draw_reader_tab_bar(frame, rows[0], &app.reader_tabs, app.reader_active_tab, true, &t);
+    if let Some(editor) = app.reader_editor_mut() {
       let t = std::time::Instant::now();
-      editor.update_layout(area);
-      cli_text_reader::draw_editor(frame, area, editor);
+      editor.update_layout(rows[1]);
+      cli_text_reader::draw_editor(frame, rows[1], editor);
       log::debug!("draw_editor (full-width): {}ms", t.elapsed().as_millis());
     }
     return MainRowRects {
@@ -389,15 +421,20 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     let notes_w = (inner_w * 40 / 100).max(1);
     let (reader_rect, notes_rect) =
       draw_horiz_split_box(frame, area, notes_w, "Reader", "Notes", &t);
-    if let Some(editor) = app.reader.as_mut() {
-      let t = std::time::Instant::now();
-      editor.update_layout(reader_rect);
-      cli_text_reader::draw_editor(frame, reader_rect, editor);
-      log::debug!("draw_editor (split): {}ms", t.elapsed().as_millis());
+    {
+      let rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(reader_rect);
+      draw_reader_tab_bar(frame, rows[0], &app.reader_tabs, app.reader_active_tab, true, &t);
+      if let Some(editor) = app.reader_editor_mut() {
+        let t = std::time::Instant::now();
+        editor.update_layout(rows[1]);
+        cli_text_reader::draw_editor(frame, rows[1], editor);
+        log::debug!("draw_editor (split): {}ms", t.elapsed().as_millis());
+      }
     }
     if let Some(notes_app) = app.notes_app.as_mut() {
       let t = std::time::Instant::now();
-      notes::draw(frame, notes_rect, notes_app);
+      notes::draw(frame, notes_rect, notes_app, &theme);
       log::debug!("notes::draw: {}ms", t.elapsed().as_millis());
     }
     return MainRowRects {
@@ -429,7 +466,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     if app.notes_active {
       if let Some(notes_app) = app.notes_app.as_mut() {
         let t = std::time::Instant::now();
-        notes::draw(frame, bottom_rect, notes_app);
+        notes::draw(frame, bottom_rect, notes_app, &theme);
         log::debug!("notes::draw (narrow): {}ms", t.elapsed().as_millis());
       }
     } else if app.filter_focus {
@@ -478,7 +515,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
   if app.notes_active {
     if let Some(notes_app) = app.notes_app.as_mut() {
       let t = std::time::Instant::now();
-      notes::draw(frame, right_rect, notes_app);
+      notes::draw(frame, right_rect, notes_app, &theme);
       log::debug!("notes::draw: {}ms", t.elapsed().as_millis());
     }
   } else if app.filter_focus {
@@ -805,6 +842,40 @@ fn draw_feed_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     ),
   ]);
   frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_reader_tab_bar(
+  frame: &mut Frame,
+  area: Rect,
+  tabs: &[ReaderTab],
+  active: usize,
+  focused: bool,
+  t: &crate::theme::Theme,
+) {
+  if tabs.is_empty() {
+    return;
+  }
+  let max_title = (area.width as usize).saturating_sub(4).max(8) / tabs.len().max(1);
+  let spans: Vec<Span> = tabs
+    .iter()
+    .enumerate()
+    .flat_map(|(i, tab)| {
+      let title: String = tab.title.chars().take(max_title.saturating_sub(5)).collect();
+      let label = format!("[{}: {}]", i + 1, title);
+      let style = if i == active {
+        if focused {
+          Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+          Style::default().fg(t.text).add_modifier(Modifier::BOLD)
+        }
+      } else {
+        Style::default().fg(t.text_dim)
+      };
+      let sep = Span::raw("  ");
+      vec![Span::styled(label, style), sep]
+    })
+    .collect();
+  frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1709,7 +1780,7 @@ fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
   let inner = block.inner(popup_rect);
   frame.render_widget(block, popup_rect);
 
-  if let Some(editor) = app.reader.as_mut() {
+  if let Some(editor) = app.reader_popup_editor.as_mut() {
     editor.update_layout(inner);
     cli_text_reader::draw_editor(frame, inner, editor);
   }
@@ -2288,7 +2359,7 @@ fn draw_settings(frame: &mut Frame, app: &App) {
     Line::from(Span::styled("  Theme", white)),
     Line::from(vec![
       Span::styled(
-        "  [enter to cycle]  ",
+        "  [enter to choose] ",
         if app.settings_field == 5 {
           Style::default().fg(t.accent)
         } else {
@@ -2296,7 +2367,7 @@ fn draw_settings(frame: &mut Frame, app: &App) {
         },
       ),
       Span::styled(
-        app.active_theme.label().to_string(),
+        app.active_theme.info().name.to_string(),
         if app.settings_field == 5 {
           Style::default().fg(t.success).add_modifier(Modifier::BOLD)
         } else {
@@ -2337,6 +2408,110 @@ fn draw_settings(frame: &mut Frame, app: &App) {
 
   let para = Paragraph::new(lines).wrap(Wrap { trim: false });
   frame.render_widget(para, inner);
+}
+
+fn draw_theme_picker(frame: &mut Frame, app: &App) {
+  let t = app.active_theme.theme();
+  let area = frame.area();
+  let popup_w = (area.width as u32 * 56 / 100).max(44).min(area.width as u32) as u16;
+  let popup_h = (area.height as u32 * 62 / 100).max(16).min(area.height as u32) as u16;
+  let x = area.x + area.width.saturating_sub(popup_w) / 2;
+  let y = area.y + area.height.saturating_sub(popup_h) / 2;
+  let popup = Rect::new(x, y, popup_w, popup_h);
+
+  frame.render_widget(Clear, popup);
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .title(Span::styled(
+      " Theme ",
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+    ))
+    .border_style(Style::default().fg(t.border))
+    .style(Style::default().bg(t.bg_popup));
+  let inner = block.inner(popup);
+  frame.render_widget(block, popup);
+
+  if inner.height == 0 || inner.width == 0 {
+    return;
+  }
+
+  let footer_h = 1u16.min(inner.height);
+  let list_h = inner.height.saturating_sub(footer_h);
+  let list_area = Rect { height: list_h, ..inner };
+  let footer_area = Rect {
+    y: inner.y + list_h,
+    height: footer_h,
+    ..inner
+  };
+
+  let all = ui_theme::ThemeId::all();
+  let scroll = app.theme_picker_scroll.min(all.len().saturating_sub(1));
+  let end = (scroll + list_h as usize).min(all.len());
+  let mut lines: Vec<Line> = Vec::new();
+  let mut last_group: Option<ui_theme::ThemeGroup> = if scroll == 0 {
+    None
+  } else {
+    Some(all[scroll - 1].info().group)
+  };
+
+  for (idx, id) in all.iter().enumerate().skip(scroll).take(end.saturating_sub(scroll)) {
+    let info = id.info();
+    if last_group != Some(info.group) {
+      lines.push(Line::from(Span::styled(
+        format!("  {}", info.group.label()),
+        Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+      )));
+      last_group = Some(info.group);
+      if lines.len() >= list_h as usize {
+        break;
+      }
+    }
+
+    let theme = id.theme();
+    let selected = idx == app.theme_picker_cursor;
+    let row_style = if selected {
+      Style::default()
+        .fg(t.text)
+        .bg(t.bg_selection)
+        .add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text)
+    };
+    let marker = if selected { ">" } else { " " };
+    lines.push(Line::from(vec![
+      Span::styled(format!(" {marker} "), row_style),
+      Span::styled(format!("{:<20}", info.name), row_style),
+      swatch(theme.accent),
+      swatch(theme.header),
+      swatch(theme.text_dim),
+      swatch(theme.bg_selection),
+      swatch(theme.success),
+      swatch(theme.warning),
+      swatch(theme.error),
+      Span::styled(format!("  {}", info.id), Style::default().fg(t.text_dim)),
+    ]));
+
+    if lines.len() >= list_h as usize {
+      break;
+    }
+  }
+
+  frame.render_widget(
+    Paragraph::new(lines).style(Style::default().bg(t.bg_popup)),
+    list_area,
+  );
+
+  frame.render_widget(
+    Paragraph::new(Span::styled(
+      " j/k: preview  enter: select  esc: cancel",
+      Style::default().fg(t.text_dim).bg(t.bg_popup),
+    )),
+    footer_area,
+  );
+}
+
+fn swatch(color: Color) -> Span<'static> {
+  Span::styled("  ", Style::default().bg(color))
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -2597,6 +2772,12 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Ldr+v", "Toggle bottom feed panel (dual mode)"),
       ("Ldr+n", "Toggle notes panel"),
       ("q / Esc", "Close / step back reader state"),
+      ("", ""),
+      ("Tabs", ""),
+      ("Ldr+t", "Open in new tab (prompt if dual)"),
+      ("Ldr+[", "Previous tab"),
+      ("Ldr+]", "Next tab"),
+      ("Ldr+w", "Close current tab"),
       ("", ""),
       ("Voice", ""),
       ("r", "Read current paragraph"),

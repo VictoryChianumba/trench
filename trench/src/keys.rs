@@ -6,8 +6,8 @@ use crate::app::{
   RepoContext, RepoPane, SourcesDetectState,
 };
 use crate::config;
-use crate::ingestion;
 use crate::models::WorkflowState;
+use ui_theme::ThemeId;
 
 use super::{
   do_refresh, force_refresh, get_pane_by_number, kbd_scroll_ok, open_url,
@@ -29,11 +29,35 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
   if app.reader_popup_active {
     if key.code == KeyCode::Esc {
       app.reader_popup_active = false;
-    } else if let Some(editor) = app.reader.as_mut() {
+    } else if let Some(editor) = app.reader_popup_editor.as_mut() {
       let action = editor.handle_key(key);
       if matches!(action, cli_text_reader::EditorAction::Quit) {
         app.reader_popup_active = false;
       }
+    }
+    return;
+  }
+
+  // Tab window prompt — intercepts [1]/[2]/Esc to choose which reader pane.
+  if app.tab_window_prompt_active {
+    match key.code {
+      KeyCode::Char('1') => {
+        app.tab_window_prompt_active = false;
+        app.fulltext_for_secondary = false;
+        app.fulltext_new_tab = true;
+        trigger_fulltext_new_tab(app);
+      }
+      KeyCode::Char('2') => {
+        app.tab_window_prompt_active = false;
+        app.fulltext_for_secondary = true;
+        app.fulltext_new_tab = true;
+        trigger_fulltext_new_tab(app);
+      }
+      KeyCode::Esc => {
+        app.tab_window_prompt_active = false;
+        app.set_notification("Cancelled.".to_string());
+      }
+      _ => {}
     }
     return;
   }
@@ -451,34 +475,8 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         app.focused_pane =
           if app.reader_active { PaneId::Reader } else { PaneId::Feed };
       }
-      PaneId::SecondaryReader => {
-        // Close secondary reader, step back to State 2.
-        app.reader_dual_active = false;
-        app.reader_bottom_open = false;
-        app.reader_bottom_focused = false;
-        app.reader_secondary = None;
-        app.focused_reader = FocusedReader::Primary;
-        app.focused_pane = PaneId::Reader;
-      }
-      PaneId::Reader => {
-        if app.reader_dual_active {
-          // Step State 3 → State 2.
-          app.reader_dual_active = false;
-          app.reader_bottom_open = false;
-          app.reader_bottom_focused = false;
-          app.reader_secondary = None;
-          app.focused_reader = FocusedReader::Primary;
-        } else if app.reader_split_active {
-          // Step State 2 → State 1.
-          app.reader_split_active = false;
-          app.reader_active = false;
-          app.reader = None;
-          app.focused_pane = PaneId::Feed;
-        } else {
-          app.reader_active = false;
-          app.reader = None;
-          app.focused_pane = PaneId::Feed;
-        }
+      PaneId::SecondaryReader | PaneId::Reader => {
+        close_all_readers(app);
       }
       PaneId::Feed | PaneId::Details => {}
     },
@@ -502,7 +500,85 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         app.focused_pane = pane;
       }
     }
+    // Ldr+t — open selected item as a new tab
+    KeyCode::Char('t') => {
+      if app.fulltext_loading {
+        return;
+      }
+      if app.reader_dual_active {
+        app.tab_window_prompt_active = true;
+        app.set_notification("Add to: [1] left  [2] right  Esc: cancel".to_string());
+      } else {
+        app.fulltext_new_tab = !app.reader_tabs.is_empty();
+        app.fulltext_for_secondary = false;
+        trigger_fulltext_new_tab(app);
+      }
+    }
+    // Ldr+[ / Ldr+] — cycle tabs in focused reader
+    KeyCode::Char('[') => {
+      if app.reader_active {
+        app.reader_prev_tab();
+      }
+    }
+    KeyCode::Char(']') => {
+      if app.reader_active {
+        app.reader_next_tab();
+      }
+    }
+    // Ldr+w — close current tab (collapse pane when last tab)
+    KeyCode::Char('w') => match app.focused_pane {
+      PaneId::SecondaryReader => {
+        let pane_empty = app.reader_secondary_close_active_tab();
+        if pane_empty {
+          app.reader_dual_active = false;
+          app.reader_bottom_open = false;
+          app.reader_bottom_focused = false;
+          app.focused_reader = FocusedReader::Primary;
+          app.focused_pane = PaneId::Reader;
+        }
+      }
+      PaneId::Reader if app.reader_active => {
+        let pane_empty = app.reader_close_active_tab();
+        if pane_empty {
+          if app.reader_dual_active {
+            app.reader_dual_active = false;
+            app.reader_bottom_open = false;
+            app.reader_bottom_focused = false;
+            app.reader_secondary_tabs.clear();
+            app.reader_secondary_active_tab = 0;
+          } else if app.reader_split_active {
+            app.reader_split_active = false;
+          }
+          app.focused_pane = PaneId::Feed;
+        }
+      }
+      _ => {}
+    },
     _ => {}
+  }
+}
+
+/// Spawns a fulltext fetch for the selected item, using flags already set on app.
+fn trigger_fulltext_new_tab(app: &mut App) {
+  if app.fulltext_loading {
+    app.set_notification("Already fetching…".to_string());
+    return;
+  }
+  if let Some(item) = app.selected_item().cloned() {
+    let (tx, rx) = mpsc::channel();
+    app.fulltext_rx = Some(rx);
+    app.fulltext_loading = true;
+    app.last_read = Some(item.title.clone());
+    app.last_read_source = Some(if item.source_name.is_empty() {
+      item.source_platform.short_label().to_string()
+    } else {
+      item.source_name.clone()
+    });
+    app.set_notification(format!(
+      "Fetching: {}…",
+      truncate_for_notif(&item.title, 40)
+    ));
+    spawn_fulltext_fetch(item, tx);
   }
 }
 
@@ -553,22 +629,35 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
   // Secondary reader (State 3, right pane).
   if app.reader_dual_active && app.focused_pane == PaneId::SecondaryReader {
     log::debug!("routing to secondary reader pane");
-    // Tab in secondary reader → focus bottom pane (if open).
     if key.code == KeyCode::Tab {
       if app.reader_bottom_open {
         app.reader_bottom_focused = true;
       }
       return true;
     }
-    if let Some(editor) = app.reader_secondary.as_mut() {
+    // Esc in Normal mode: force-close everything and return to feed.
+    if key.code == KeyCode::Esc {
+      let in_normal = app
+        .reader_secondary_editor_mut()
+        .map(|e| e.is_normal_mode())
+        .unwrap_or(true);
+      if in_normal {
+        close_all_readers(app);
+        return true;
+      }
+    }
+    if let Some(editor) = app.reader_secondary_editor_mut() {
       let action = editor.handle_key(key);
+      // q: close the current secondary tab; collapse to primary when empty.
       if matches!(action, cli_text_reader::EditorAction::Quit) {
-        app.reader_secondary = None;
-        app.reader_dual_active = false;
-        app.reader_bottom_open = false;
-        app.reader_bottom_focused = false;
-        app.focused_reader = FocusedReader::Primary;
-        app.focused_pane = PaneId::Reader;
+        let pane_empty = app.reader_secondary_close_active_tab();
+        if pane_empty {
+          app.reader_dual_active = false;
+          app.reader_bottom_open = false;
+          app.reader_bottom_focused = false;
+          app.focused_reader = FocusedReader::Primary;
+          app.focused_pane = PaneId::Reader;
+        }
       }
     }
     return true;
@@ -581,38 +670,69 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
 
   // Tab in primary reader during State 3 → focus secondary reader.
   if app.reader_dual_active && key.code == KeyCode::Tab {
-    if app.reader_secondary.is_some() {
+    if !app.reader_secondary_tabs.is_empty() {
       app.focused_pane = PaneId::SecondaryReader;
       app.focused_reader = FocusedReader::Secondary;
     }
     return true;
   }
 
-  if let Some(editor) = app.reader.as_mut() {
+  // Esc in Normal mode: force-close everything and return to feed.
+  if key.code == KeyCode::Esc {
+    let in_normal = app
+      .reader_editor_mut()
+      .map(|e| e.is_normal_mode())
+      .unwrap_or(true);
+    if in_normal {
+      close_all_readers(app);
+      return true;
+    }
+  }
+
+  if let Some(editor) = app.reader_editor_mut() {
     let action = editor.handle_key(key);
+    // q: close the current tab; apply state machine only when the pane goes empty.
     if matches!(action, cli_text_reader::EditorAction::Quit) {
-      if app.reader_dual_active {
-        // State 3 → State 2: close secondary pane, keep primary reader open.
-        app.reader_dual_active = false;
-        app.reader_bottom_open = false;
-        app.reader_bottom_focused = false;
-        app.reader_secondary = None;
-        app.focused_pane = PaneId::Reader;
-      } else if app.reader_split_active {
-        // State 2 → State 1: close split, return to feed.
-        app.reader_split_active = false;
-        app.reader_active = false;
-        app.reader = None;
-        app.focused_pane = PaneId::Feed;
-      } else {
-        // State 1 reader: close reader entirely.
-        app.reader_active = false;
-        app.reader = None;
-        app.focused_pane = PaneId::Feed;
+      let pane_empty = app.reader_close_active_tab();
+      if pane_empty {
+        if app.reader_dual_active {
+          // Primary ran out of tabs: promote secondary tabs to primary.
+          app.reader_tabs =
+            std::mem::take(&mut app.reader_secondary_tabs);
+          app.reader_active_tab = app.reader_secondary_active_tab;
+          app.reader_secondary_active_tab = 0;
+          app.reader_active = !app.reader_tabs.is_empty();
+          app.reader_dual_active = false;
+          app.reader_bottom_open = false;
+          app.reader_bottom_focused = false;
+          app.focused_reader = FocusedReader::Primary;
+          app.focused_pane =
+            if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+        } else if app.reader_split_active {
+          app.reader_split_active = false;
+          app.focused_pane = PaneId::Feed;
+        } else {
+          app.focused_pane = PaneId::Feed;
+        }
       }
     }
   }
   true
+}
+
+/// Close all reader state and return focus to the feed.
+fn close_all_readers(app: &mut App) {
+  app.reader_active = false;
+  app.reader_dual_active = false;
+  app.reader_split_active = false;
+  app.reader_bottom_open = false;
+  app.reader_bottom_focused = false;
+  app.reader_tabs.clear();
+  app.reader_active_tab = 0;
+  app.reader_secondary_tabs.clear();
+  app.reader_secondary_active_tab = 0;
+  app.focused_reader = FocusedReader::Primary;
+  app.focused_pane = PaneId::Feed;
 }
 
 // ── View handlers ─────────────────────────────────────────────────────────────
@@ -852,6 +972,10 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
   if app.view != AppView::Settings {
     return false;
   }
+  if app.theme_picker_active {
+    handle_theme_picker(key, app);
+    return true;
+  }
   if app.settings_editing {
     match key.code {
       KeyCode::Enter => {
@@ -896,8 +1020,7 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
               "claude".to_string()
             };
         } else if app.settings_field == 5 {
-          app.active_theme = app.active_theme.cycle();
-          app.config.theme = app.active_theme;
+          open_theme_picker(app);
         } else {
           app.settings_edit_buf = match app.settings_field {
             0 => app.settings_github_token.clone(),
@@ -955,6 +1078,59 @@ fn handle_settings_view(key: KeyEvent, app: &mut App) -> bool {
     }
   }
   true
+}
+
+fn open_theme_picker(app: &mut App) {
+  let all = ThemeId::all();
+  app.theme_picker_active = true;
+  app.theme_picker_original = Some(app.active_theme);
+  app.theme_picker_cursor =
+    all.iter().position(|id| *id == app.active_theme).unwrap_or(0);
+  app.theme_picker_scroll = app.theme_picker_cursor.saturating_sub(4);
+}
+
+fn handle_theme_picker(key: KeyEvent, app: &mut App) {
+  let all = ThemeId::all();
+  if all.is_empty() {
+    app.theme_picker_active = false;
+    return;
+  }
+
+  match key.code {
+    KeyCode::Char('q') | KeyCode::Esc => {
+      if let Some(original) = app.theme_picker_original.take() {
+        app.active_theme = original;
+      }
+      app.theme_picker_active = false;
+    }
+    KeyCode::Enter => {
+      app.active_theme = all[app.theme_picker_cursor.min(all.len() - 1)];
+      app.config.theme = app.active_theme;
+      app.theme_picker_original = None;
+      app.theme_picker_active = false;
+    }
+    KeyCode::Char('j') | KeyCode::Down => {
+      app.theme_picker_cursor = (app.theme_picker_cursor + 1).min(all.len() - 1);
+      app.active_theme = all[app.theme_picker_cursor];
+      clamp_theme_picker_scroll(app);
+    }
+    KeyCode::Char('k') | KeyCode::Up => {
+      app.theme_picker_cursor = app.theme_picker_cursor.saturating_sub(1);
+      app.active_theme = all[app.theme_picker_cursor];
+      clamp_theme_picker_scroll(app);
+    }
+    _ => {}
+  }
+}
+
+fn clamp_theme_picker_scroll(app: &mut App) {
+  const VISIBLE_ROWS: usize = 10;
+  if app.theme_picker_cursor < app.theme_picker_scroll {
+    app.theme_picker_scroll = app.theme_picker_cursor;
+  } else if app.theme_picker_cursor >= app.theme_picker_scroll + VISIBLE_ROWS {
+    app.theme_picker_scroll =
+      app.theme_picker_cursor.saturating_sub(VISIBLE_ROWS - 1);
+  }
 }
 
 fn handle_feed_view(key: KeyEvent, app: &mut App) {
@@ -1220,19 +1396,8 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
             } else {
               item.source_name.clone()
             });
-            if let Some(id) = crate::models::arxiv_id_from_url(&item.url) {
-              log::debug!("feed Enter: arXiv paper {id}, spawning block fetch");
-              let (tx, rx) = mpsc::channel();
-              app.block_reader_rx = Some(rx);
-              app.block_reader_loading = true;
-              app.block_reader_key = Some(id.clone());
-              app.set_notification(format!(
-                "Loading {}…",
-                truncate_for_notif(&item.title, 40)
-              ));
-              let authors = item.authors.join(", ");
-              ingestion::block_fetch::spawn(id, item.title.clone(), authors, tx);
-            } else {
+            // TODO: switch back to block_reader for arXiv once it's ready.
+            {
               log::debug!(
                 "feed Enter: spawning fulltext fetch for url={}",
                 item.url

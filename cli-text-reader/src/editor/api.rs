@@ -55,6 +55,11 @@ impl Editor {
     EditorAction::None
   }
 
+  /// Returns true when the editor is in Normal mode (no search / visual / command active).
+  pub fn is_normal_mode(&self) -> bool {
+    self.get_active_mode() == EditorMode::Normal
+  }
+
   /// Update internal width/height from a ratatui Rect (called on resize and
   /// before each draw).
   pub fn update_layout(&mut self, area: Rect) {

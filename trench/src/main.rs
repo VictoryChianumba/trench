@@ -765,7 +765,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.process_incoming();
 
     // Tick the embedded reader each frame (voice sync, demo hints, etc.).
-    if let Some(editor) = app.reader.as_mut() {
+    if let Some(editor) = app.reader_editor_mut() {
+      editor.tick();
+    }
+    if let Some(editor) = app.reader_secondary_editor_mut() {
+      editor.tick();
+    }
+    if let Some(editor) = app.reader_popup_editor.as_mut() {
       editor.tick();
     }
 
@@ -792,17 +798,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(lines) => {
               log::debug!("reader_open: {} lines", lines.len());
               let editor = cli_text_reader::Editor::new(lines, 80);
+              let title = app.last_read.clone().unwrap_or_default();
               if app.fulltext_for_secondary {
-                // State 3: load into the secondary (right) reader pane.
-                app.reader_secondary = Some(editor);
+                if app.fulltext_new_tab {
+                  app.reader_secondary_push_tab(title, editor);
+                } else {
+                  app.reader_secondary_replace_active_tab(title, editor);
+                }
                 app.focused_reader = FocusedReader::Secondary;
                 app.focused_pane = PaneId::SecondaryReader;
                 app.fulltext_for_secondary = false;
               } else {
-                app.reader = Some(editor);
-                app.reader_active = true;
+                if app.fulltext_new_tab {
+                  app.reader_push_tab(title, editor);
+                } else {
+                  app.reader_replace_active_tab(title, editor);
+                }
                 app.focused_pane = PaneId::Reader;
               }
+              app.fulltext_new_tab = false;
               app.clear_notification();
             }
             Err(e) => {
@@ -815,6 +829,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           app.fulltext_rx = None;
           app.fulltext_loading = false;
           app.fulltext_for_secondary = false;
+          app.fulltext_new_tab = false;
           app.set_notification("Fetch error: thread disconnected".to_string());
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -830,7 +845,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           match result {
             Ok(lines) => {
               let editor = cli_text_reader::Editor::new(lines, 80);
-              app.reader = Some(editor);
+              app.reader_popup_editor = Some(editor);
               app.reader_popup_active = true;
               app.clear_notification();
             }
@@ -861,7 +876,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               // Suspend trench TUI, hand off to block_reader.
               disable_raw_mode()?;
               execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-              let _ = block_reader::run(blocks, Some(meta), key);
+              let theme = app.active_theme.theme();
+              let _ = block_reader::run_with_theme(blocks, Some(meta), key, &theme);
               // Resume trench TUI.
               enable_raw_mode()?;
               execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
