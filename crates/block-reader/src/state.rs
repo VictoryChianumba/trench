@@ -6,6 +6,7 @@ pub const TOC_WIDTH: usize = 28;
 pub enum Mode {
   Normal,
   Search,
+  Visual { line_mode: bool },
 }
 
 /// Paper-level metadata shown in the header bar.
@@ -20,6 +21,7 @@ pub struct Reader {
   pub visual_lines: Vec<VisualLine>,
   pub sections: Vec<(usize, u8, String)>, // (line_idx, level, title)
   pub toc_visible: bool,
+  pub help_visible: bool,
   pub offset: usize,
   pub cursor_y: usize,
   pub width: usize,
@@ -32,6 +34,16 @@ pub struct Reader {
   pub nav_history: Vec<(usize, usize)>,
   /// Optional paper metadata shown in the header bar.
   pub meta: Option<PaperMeta>,
+  /// Sorted list of bookmarked absolute line indices.
+  pub bookmarks: Vec<usize>,
+  /// Logical column cursor — used by `*` and visual char mode; reset to 0 on line change.
+  pub cursor_x: usize,
+  /// Absolute line index where visual selection started.
+  pub visual_anchor: usize,
+  /// Column index where visual selection started.
+  pub visual_anchor_x: usize,
+  /// Accumulated digit prefix for count motions (e.g. "5" before `j`).
+  pub count_buf: String,
 }
 
 impl Reader {
@@ -44,6 +56,7 @@ impl Reader {
       visual_lines,
       sections,
       toc_visible: false,
+      help_visible: false,
       offset: 0,
       cursor_y: 0,
       width,
@@ -54,6 +67,11 @@ impl Reader {
       mode: Mode::Normal,
       nav_history: Vec::new(),
       meta: None,
+      bookmarks: Vec::new(),
+      cursor_x: 0,
+      visual_anchor: 0,
+      visual_anchor_x: 0,
+      count_buf: String::new(),
     }
   }
 
@@ -111,6 +129,36 @@ impl Reader {
     if let Some((offset, cursor_y)) = self.nav_history.pop() {
       self.offset = offset;
       self.cursor_y = cursor_y;
+    }
+  }
+
+  pub fn toggle_help(&mut self) {
+    self.help_visible = !self.help_visible;
+  }
+
+  pub fn toggle_bookmark(&mut self) {
+    let line = self.offset + self.cursor_y;
+    match self.bookmarks.binary_search(&line) {
+      Ok(pos) => { self.bookmarks.remove(pos); }
+      Err(pos) => { self.bookmarks.insert(pos, line); }
+    }
+  }
+
+  pub fn next_bookmark(&mut self) {
+    let cur = self.offset + self.cursor_y;
+    if let Some(&target) = self.bookmarks.iter().find(|&&b| b > cur) {
+      self.push_nav_mark();
+      self.offset = target;
+      self.cursor_y = 0;
+    }
+  }
+
+  pub fn prev_bookmark(&mut self) {
+    let cur = self.offset + self.cursor_y;
+    if let Some(&target) = self.bookmarks.iter().rfind(|&&b| b < cur) {
+      self.push_nav_mark();
+      self.offset = target;
+      self.cursor_y = 0;
     }
   }
 

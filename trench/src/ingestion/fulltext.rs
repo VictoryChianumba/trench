@@ -355,10 +355,25 @@ fn strip_ansi(s: &str) -> String {
   let mut chars = s.chars().peekable();
   while let Some(c) = chars.next() {
     if c == '\x1b' {
-      for ch in chars.by_ref() {
-        if matches!(ch, 'm' | 'K' | 'J' | 'H' | 'A' | 'B' | 'C' | 'D') {
-          break;
+      match chars.peek() {
+        Some('[') => {
+          // CSI sequence — ends at the first alphabetic character.
+          chars.next();
+          for ch in chars.by_ref() {
+            if ch.is_ascii_alphabetic() { break; }
+          }
         }
+        Some(']') => {
+          // OSC sequence — ends at BEL (\x07) or ST (\x1b\).
+          chars.next();
+          let mut prev = '\0';
+          for ch in chars.by_ref() {
+            if ch == '\x07' { break; }
+            if prev == '\x1b' && ch == '\\' { break; }
+            prev = ch;
+          }
+        }
+        _ => { chars.next(); } // bare ESC or other — skip one char
       }
     } else {
       out.push(c);

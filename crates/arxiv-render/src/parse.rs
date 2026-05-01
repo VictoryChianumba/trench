@@ -47,6 +47,13 @@ impl InlineBuilder {
     self.has_style = true;
   }
 
+  fn push_url(&mut self, text: &str, url: String) {
+    if text.is_empty() { return; }
+    self.flush_plain();
+    self.spans.push(InlineSpan { underline: true, url: Some(url), ..InlineSpan::plain(text) });
+    self.has_style = true;
+  }
+
   /// Consume and reset. Returns Some(spans) if styled, None if plain-only.
   fn finish(&mut self) -> Option<Vec<InlineSpan>> {
     if !self.has_style {
@@ -79,7 +86,7 @@ const CODE_ENVS: &[&str] = &["verbatim", "lstlisting", "Verbatim", "minted"];
 const ALGO_ENVS: &[&str] = &["algorithm", "algorithm2e", "algorithmic", "algorithmicx"];
 
 const CAPTION_ENVS: &[&str] = &[
-  "figure", "figure*", "table", "table*", "wrapfigure", "subfigure",
+  "figure", "figure*", "wrapfigure", "subfigure",
 ];
 
 const TABULAR_ENVS: &[&str] = &[
@@ -456,6 +463,33 @@ fn process_body(
             continue;
           }
 
+          if matches!(env.as_str(), "quote" | "quotation" | "epigraph") {
+            let (body_text, adv) = read_until_end(&text, i, &env);
+            i += adv;
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
+            let cleaned = clean_inline(body_text.replace('\n', " "));
+            if !cleaned.trim().is_empty() {
+              out.push(Block::Quote(vec![InlineSpan::italic(cleaned.trim().to_string())]));
+            }
+            continue;
+          }
+
+          if matches!(env.as_str(), "table" | "table*") {
+            let (body_text, adv) = read_until_end(&text, i, &env);
+            i += adv;
+            flush_builder(&mut builder, &mut list_item_pending, &mut out);
+            for tab_env in TABULAR_ENVS {
+              if let Some(tab_body) = extract_env(&body_text, tab_env) {
+                out.extend(parse_tabular(&tab_body));
+                break;
+              }
+            }
+            if let Some(cap) = extract_caption(&body_text) {
+              out.push(Block::Line(format!("[Table: {}]", cap)));
+            }
+            continue;
+          }
+
           if CAPTION_ENVS.contains(&env.as_str()) {
             let (body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
@@ -470,9 +504,7 @@ fn process_body(
             let (body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
             flush_builder(&mut builder, &mut list_item_pending, &mut out);
-            if let Some(matrix) = parse_tabular(&body_text) {
-              out.push(matrix);
-            }
+            out.extend(parse_tabular(&body_text));
             continue;
           }
 
@@ -610,11 +642,20 @@ fn process_body(
         }
         // Commands that carry content but no renderable style difference:
         "text" | "mathrm" | "mathcal" | "mathbb" | "overline"
-        | "textsubscript" | "textsuperscript" => {
+        | "textsubscript" | "textsuperscript"
+        | "textsf" | "textsc" | "textsl" | "textrm" | "textmd" | "textup" => {
           let (content, skip) = read_braced_arg(&text, i);
           i += skip;
           builder.push_plain(&content);
         }
+
+        // Text-mode symbol commands with no braced argument.
+        "textbackslash" => builder.push_char('\\'),
+        "textless"      => builder.push_char('<'),
+        "textgreater"   => builder.push_char('>'),
+        "textbar"       => builder.push_char('|'),
+        "textasciitilde"    => builder.push_char('~'),
+        "textasciicircum"   => builder.push_char('^'),
 
         "textcolor" | "colorbox" | "fbox" | "mbox" | "makebox" => {
           let (_opt, skip1) = read_braced_arg(&text, i);
@@ -679,6 +720,15 @@ fn process_body(
 
         // Backslash-space → literal space.
         " " => builder.push_char(' '),
+
+        // LaTeX special characters — \% \$ \& \# \_ \{ \} → literal character.
+        "%" => builder.push_char('%'),
+        "$" => builder.push_char('$'),
+        "&" => builder.push_char('&'),
+        "#" => builder.push_char('#'),
+        "_" => builder.push_char('_'),
+        "{" => builder.push_char('{'),
+        "}" => builder.push_char('}'),
 
         "color" | "bibliography" | "bibliographystyle" | "maketitle"
         | "tableofcontents" | "newcommand" | "renewcommand" | "providecommand"
@@ -764,9 +814,10 @@ fn process_body(
           if cmd == "href" {
             let (display, skip2) = read_braced_arg(&text, i);
             i += skip2;
-            builder.push_plain(&display);
+            builder.push_url(&display, url);
           } else {
-            builder.push_plain(url.trim());
+            let u = url.trim().to_string();
+            builder.push_url(&u.clone(), u);
           }
         }
         "item" => {
@@ -788,13 +839,8 @@ fn process_body(
           let (math, adv) = read_until_str(&text, i, r"\)");
           i += adv;
           let rendered = render_math(&math, macros);
-          if rendered.contains('\n') {
-            flush_builder(&mut builder, &mut list_item_pending, &mut out);
-            let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-            out.push(Block::DisplayMath { lines, num: None });
-          } else {
-            builder.push_plain(&rendered);
-          }
+          let flat = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+          builder.push_plain(&flat);
         }
         // Display math \[ ... \]
         "[" => {
@@ -867,9 +913,7 @@ fn process_body(
           } else if i < len && text[i] == '{' {
             let (content, skip) = read_braced_arg(&text, i);
             i += skip;
-            if content.contains(' ') || content.contains('\n') || content.contains(',') {
-              builder.push_plain(&content);
-            }
+            builder.push_plain(&content);
           }
         }
       }
@@ -891,13 +935,8 @@ fn process_body(
         let (math, adv) = read_until_single_dollar(&text, i);
         i += adv;
         let rendered = render_math(&math, macros);
-        if rendered.contains('\n') {
-          flush_builder(&mut builder, &mut list_item_pending, &mut out);
-          let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
-          out.push(Block::DisplayMath { lines, num: None });
-        } else {
-          builder.push_plain(&rendered);
-        }
+        let flat = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        builder.push_plain(&flat);
       }
       continue;
     }
@@ -1019,6 +1058,7 @@ fn render_text_with_math(s: &str, macros: &HashMap<String, (usize, String)>) -> 
       continue;
     }
     if chars[i] == '$' {
+
       i += 1;
       let (math, adv) = read_until_single_dollar(&chars, i);
       i += adv;
@@ -1047,6 +1087,9 @@ fn render_text_with_math(s: &str, macros: &HashMap<String, (usize, String)>) -> 
             let (_, skip) = read_braced_arg(&chars, i);
             i += skip;
           }
+        }
+        "%" | "$" | "&" | "#" | "_" | "{" | "}" => {
+          out.push(cmd.chars().next().unwrap());
         }
         _ => {
           if i < chars.len() && chars[i] == '{' {
@@ -1480,8 +1523,74 @@ fn extract_caption(body: &str) -> Option<String> {
   extract_command_arg(body, "caption").map(clean_inline)
 }
 
+/// Strip LaTeX `%`-to-end-of-line comments from a string.
+fn strip_tex_comments(s: &str) -> String {
+  let mut out = String::new();
+  for line in s.lines() {
+    let trimmed = if let Some(pos) = line.find('%') {
+      if pos == 0 || !line[..pos].ends_with('\\') {
+        &line[..pos]
+      } else {
+        line
+      }
+    } else {
+      line
+    };
+    out.push_str(trimmed);
+    out.push('\n');
+  }
+  out
+}
+
+/// Strip any leading horizontal-rule commands from a tabular row chunk.
+/// Returns `(had_rule, remaining_text)`.
+fn peel_row_prefix(mut text: &str) -> (bool, &str) {
+  const RULE_PREFIXES: &[&str] = &[
+    r"\hline", r"\toprule", r"\midrule", r"\bottomrule",
+    r"\cmidrule", r"\specialrule",
+  ];
+  let mut had_rule = false;
+  loop {
+    let t = text.trim_start();
+    let matched = RULE_PREFIXES.iter().find(|&&r| t.starts_with(r));
+    match matched {
+      None => break,
+      Some(&r) => {
+        had_rule = true;
+        let after = &t[r.len()..];
+        // Skip optional braced args: \cmidrule{2-3}, \specialrule{w}{a}{b}
+        let after = skip_braced_args(after);
+        text = after;
+      }
+    }
+  }
+  (had_rule, text)
+}
+
+/// Skip zero or more leading `{...}` groups (used after rule commands).
+fn skip_braced_args(mut s: &str) -> &str {
+  loop {
+    let t = s.trim_start();
+    if !t.starts_with('{') { return t; }
+    let mut depth = 0usize;
+    let mut end = 0;
+    for (i, c) in t.char_indices() {
+      match c {
+        '{' => depth += 1,
+        '}' => {
+          depth -= 1;
+          if depth == 0 { end = i + 1; break; }
+        }
+        _ => {}
+      }
+    }
+    if end == 0 { return t; }
+    s = &t[end..];
+  }
+}
+
 /// Parse a raw tabular body into a `Block::Matrix`.
-fn parse_tabular(body: &str) -> Option<Block> {
+fn parse_tabular(body: &str) -> Vec<Block> {
   let body = body.trim_start();
   let body = if body.starts_with('{') {
     match body.find('}') {
@@ -1492,19 +1601,35 @@ fn parse_tabular(body: &str) -> Option<Block> {
     body
   };
 
-  let rows: Vec<Vec<String>> = body
-    .split(r"\\")
-    .map(|row| {
-      row.split('&')
-        .map(|cell| clean_inline(cell.trim().to_string()))
-        .filter(|c| !c.is_empty())
-        .collect()
-    })
-    .filter(|row: &Vec<String>| !row.is_empty())
-    .collect();
+  let cleaned = strip_tex_comments(body);
+  let mut blocks: Vec<Block> = Vec::new();
+  let mut current_rows: Vec<Vec<String>> = Vec::new();
 
-  if rows.is_empty() { return None; }
-  Some(Block::Matrix { rows })
+  for raw_row in cleaned.split(r"\\") {
+    let (had_rule, data_text) = peel_row_prefix(raw_row);
+    if had_rule && !current_rows.is_empty() {
+      blocks.push(Block::Matrix { rows: std::mem::take(&mut current_rows) });
+    }
+    if had_rule {
+      blocks.push(Block::Rule);
+    }
+    let trimmed_data = data_text.trim();
+    if trimmed_data.is_empty() {
+      continue;
+    }
+    let cells: Vec<String> = trimmed_data
+      .split('&')
+      .map(|cell| clean_inline(cell.trim().to_string()))
+      .collect();
+    let has_content = cells.iter().any(|c| !c.is_empty());
+    if has_content {
+      current_rows.push(cells);
+    }
+  }
+  if !current_rows.is_empty() {
+    blocks.push(Block::Matrix { rows: current_rows });
+  }
+  blocks
 }
 
 // ── Low-level parsers ─────────────────────────────────────────────────────────
@@ -1628,6 +1753,10 @@ fn clean_inline(s: String) -> String {
   let mut out = String::new();
   let mut i = 0;
   while i < chars.len() {
+    if chars[i] == '%' && (i == 0 || chars[i - 1] != '\\') {
+      while i < chars.len() && chars[i] != '\n' { i += 1; }
+      continue;
+    }
     if chars[i] == '\\' && i + 1 < chars.len() {
       let (cmd, consumed) = read_command(&chars, i + 1);
       i += 1 + consumed;
@@ -1637,6 +1766,41 @@ fn clean_inline(s: String) -> String {
             let (_, skip) = read_braced_arg(&chars, i);
             i += skip;
           }
+        }
+        // \multirow{N}{align}{content}, \multicolumn{N}{align}{content}: skip 2, use 3rd
+        "multirow" | "multicolumn" => {
+          for _ in 0..2 {
+            if i < chars.len() && chars[i] == '{' {
+              let (_, skip) = read_braced_arg(&chars, i);
+              i += skip;
+            }
+          }
+          if i < chars.len() && chars[i] == '{' {
+            let (content, skip) = read_braced_arg(&chars, i);
+            i += skip;
+            out.push_str(&clean_inline(content));
+          }
+        }
+        // \rule{width}{height}: spacing-only, discard both args
+        "rule" => {
+          for _ in 0..2 {
+            if i < chars.len() && chars[i] == '{' {
+              let (_, skip) = read_braced_arg(&chars, i);
+              i += skip;
+            }
+          }
+        }
+        // spacing/layout commands: discard the arg
+        "vspace" | "hspace" | "vspace*" | "hspace*" | "vskip" | "hskip"
+        | "medskip" | "smallskip" | "bigskip" | "noindent" | "centering"
+        | "raggedright" | "raggedleft" | "phantom" | "vphantom" | "hphantom" => {
+          if i < chars.len() && chars[i] == '{' {
+            let (_, skip) = read_braced_arg(&chars, i);
+            i += skip;
+          }
+        }
+        "%" | "$" | "&" | "#" | "_" | "{" | "}" => {
+          out.push(cmd.chars().next().unwrap());
         }
         _ => {
           if i < chars.len() && chars[i] == '{' {
@@ -1683,11 +1847,21 @@ fn process_prose(text: &str, macros: &HashMap<String, (usize, String)>) -> Vec<S
       let (cmd, consumed) = read_command(&chars, i + 1);
       i += 1 + consumed;
       match cmd.as_str() {
-        "emph" | "textbf" | "textit" | "texttt" => {
+        "emph" | "textbf" | "textit" | "texttt" | "textsf" | "textsc"
+        | "textsl" | "textrm" | "textmd" | "textup" | "textnormal" => {
           let (content, skip) = read_braced_arg(&chars, i);
           i += skip;
           out.push_str(&content);
         }
+        "%" | "$" | "&" | "#" | "_" | "{" | "}" => {
+          out.push(cmd.chars().next().unwrap());
+        }
+        "textbackslash" => out.push('\\'),
+        "textless"      => out.push('<'),
+        "textgreater"   => out.push('>'),
+        "textbar"       => out.push('|'),
+        "textasciitilde"  => out.push('~'),
+        "textasciicircum" => out.push('^'),
         _ => {
           if i < chars.len() && chars[i] == '{' {
             let (content, skip) = read_braced_arg(&chars, i);

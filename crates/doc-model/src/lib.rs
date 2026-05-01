@@ -9,6 +9,7 @@ pub struct InlineSpan {
   pub strikethrough: bool,
   pub monospace: bool,
   pub color: Option<(u8, u8, u8)>,
+  pub url: Option<String>,
 }
 
 impl InlineSpan {
@@ -21,6 +22,7 @@ impl InlineSpan {
       strikethrough: false,
       monospace: false,
       color: None,
+      url: None,
     }
   }
 
@@ -61,6 +63,8 @@ pub enum Block {
   CodeBlock { lang: Option<String>, lines: Vec<String> },
   /// A horizontal rule: \hline, \toprule, \midrule, \bottomrule.
   Rule,
+  /// A block quote: \begin{quote}, \begin{quotation}, \begin{epigraph}.
+  Quote(Vec<InlineSpan>),
 }
 
 /// A single screen row, fully expanded from a Block.
@@ -91,6 +95,8 @@ pub enum VisualLineKind {
   Code { is_first: bool, is_last: bool },
   /// A horizontal rule; text = "─".repeat(terminal_width).
   Rule,
+  /// A block quote; text = plain concatenation of spans.
+  Quote { is_continuation: bool },
 }
 
 /// Expand a block list into the flat visual line table.
@@ -252,6 +258,19 @@ pub fn build_visual_lines(blocks: &[Block], terminal_width: usize) -> Vec<Visual
           kind: VisualLineKind::Rule,
         });
       }
+
+      Block::Quote(spans) => {
+        let quote_width = terminal_width.saturating_sub(4).max(1);
+        let wrapped = wrap_spans(spans, quote_width);
+        for (i, (_line_spans, plain)) in wrapped.into_iter().enumerate() {
+          out.push(VisualLine {
+            block_idx,
+            line_in_block: i,
+            text: plain,
+            kind: VisualLineKind::Quote { is_continuation: i > 0 },
+          });
+        }
+      }
     }
   }
 
@@ -286,6 +305,7 @@ fn wrap_spans(spans: &[InlineSpan], width: usize) -> Vec<(Vec<InlineSpan>, Strin
     strikethrough: bool,
     monospace: bool,
     color: Option<(u8, u8, u8)>,
+    url: Option<String>,
   }
 
   let mut words: Vec<Word> = Vec::new();
@@ -300,6 +320,7 @@ fn wrap_spans(spans: &[InlineSpan], width: usize) -> Vec<(Vec<InlineSpan>, Strin
           strikethrough: span.strikethrough,
           monospace: span.monospace,
           color: span.color,
+          url: span.url.clone(),
         });
       }
     }
@@ -337,6 +358,7 @@ fn wrap_spans(spans: &[InlineSpan], width: usize) -> Vec<(Vec<InlineSpan>, Strin
         && last.strikethrough == word.strikethrough
         && last.monospace == word.monospace
         && last.color == word.color
+        && last.url == word.url
     });
 
     if coalesce {
@@ -350,6 +372,7 @@ fn wrap_spans(spans: &[InlineSpan], width: usize) -> Vec<(Vec<InlineSpan>, Strin
         strikethrough: word.strikethrough,
         monospace: word.monospace,
         color: word.color,
+        url: word.url.clone(),
       });
     }
   }

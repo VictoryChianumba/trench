@@ -6,6 +6,7 @@ use crate::app::{
   RepoContext, RepoPane, SourcesDetectState,
 };
 use crate::config;
+use crate::ingestion;
 use crate::models::WorkflowState;
 
 use super::{
@@ -16,6 +17,14 @@ use super::{
 
 /// Top-level key dispatcher — called once per key press event from the main loop.
 pub fn dispatch(key: KeyEvent, app: &mut App) {
+  // Abstract popup — any of Space / Enter / Esc dismisses.
+  if app.abstract_popup_active {
+    if matches!(key.code, KeyCode::Char(' ') | KeyCode::Esc | KeyCode::Enter) {
+      app.abstract_popup_active = false;
+    }
+    return;
+  }
+
   // Reader popup (A1) — fully interactive; Esc or reader Quit dismisses.
   if app.reader_popup_active {
     if key.code == KeyCode::Esc {
@@ -92,11 +101,11 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
       app.search_query.clear();
     }
     KeyCode::Tab => {
-      // Open sources selector — returns here when user presses Esc in Sources.
-      app.sources_cursor = 0;
-      app.sources_input.clear();
-      app.sources_input_active = false;
-      app.view = AppView::Sources;
+      app.feed_tab = match app.feed_tab {
+        FeedTab::Inbox => FeedTab::Discoveries,
+        FeedTab::Discoveries => FeedTab::Inbox,
+      };
+      app.reset_active_feed_position();
     }
     KeyCode::Enter => {
       if !app.reader_bottom_details && !app.fulltext_loading {
@@ -365,13 +374,11 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         app.focused_pane = PaneId::Feed;
       }
     }
-    KeyCode::Char('d') => {
-      app.feed_tab = match app.feed_tab {
-        FeedTab::Inbox => FeedTab::Discoveries,
-        FeedTab::Discoveries => FeedTab::Inbox,
-      };
-      app.reset_active_feed_position();
-      app.focused_pane = PaneId::Feed;
+    KeyCode::Char('s') => {
+      app.sources_cursor = 0;
+      app.sources_input.clear();
+      app.sources_input_active = false;
+      app.view = AppView::Sources;
     }
     KeyCode::Char('?') => {
       app.help_active = true;
@@ -1046,7 +1053,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       }
       KeyCode::Char(' ') => app.toggle_filter_at_cursor(),
       KeyCode::Char('c') => app.clear_filters(),
-      KeyCode::Tab => {
+      KeyCode::Char('f') | KeyCode::Tab => {
         app.filter_focus = false;
       }
       KeyCode::Esc => {
@@ -1079,6 +1086,9 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       }
       KeyCode::Char('g') => app.details_scroll = 0,
       KeyCode::Char('G') => app.details_scroll = usize::MAX,
+      KeyCode::Char('h') | KeyCode::Left => {
+        app.focused_pane = PaneId::Feed;
+      }
       _ => {}
     }
   } else if app.focused_pane == PaneId::Feed {
@@ -1158,6 +1168,13 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
 
     match key.code {
       KeyCode::Tab => {
+        app.feed_tab = match app.feed_tab {
+          FeedTab::Inbox => FeedTab::Discoveries,
+          FeedTab::Discoveries => FeedTab::Inbox,
+        };
+        app.reset_active_feed_position();
+      }
+      KeyCode::Char('f') => {
         app.filter_focus = true;
       }
       KeyCode::Esc => app.should_quit = true,
@@ -1184,33 +1201,56 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       KeyCode::Char('G') => {
         app.go_to_bottom();
       }
+      KeyCode::Char(' ') => {
+        if app.selected_item().is_some() {
+          app.abstract_popup_active = true;
+        }
+      }
       KeyCode::Enter => {
-        log::debug!("feed Enter: fulltext_loading={}", app.fulltext_loading);
-        if !app.fulltext_loading {
+        log::debug!(
+          "feed Enter: fulltext_loading={} block_reader_loading={}",
+          app.fulltext_loading,
+          app.block_reader_loading
+        );
+        if !app.fulltext_loading && !app.block_reader_loading {
           if let Some(item) = app.selected_item().cloned() {
-            log::debug!(
-              "feed Enter: spawning fulltext fetch for url={}",
-              item.url
-            );
-            let t = std::time::Instant::now();
-            app.fulltext_loading = true;
             app.last_read = Some(item.title.clone());
             app.last_read_source = Some(if item.source_name.is_empty() {
               item.source_platform.short_label().to_string()
             } else {
               item.source_name.clone()
             });
-            app.set_notification(format!(
-              "Fetching: {}…",
-              truncate_for_notif(&item.title, 40)
-            ));
-            let (tx, rx) = mpsc::channel();
-            app.fulltext_rx = Some(rx);
-            spawn_fulltext_fetch(item, tx);
-            log::debug!(
-              "feed Enter: fetch setup took {}µs",
-              t.elapsed().as_micros()
-            );
+            if let Some(id) = crate::models::arxiv_id_from_url(&item.url) {
+              log::debug!("feed Enter: arXiv paper {id}, spawning block fetch");
+              let (tx, rx) = mpsc::channel();
+              app.block_reader_rx = Some(rx);
+              app.block_reader_loading = true;
+              app.block_reader_key = Some(id.clone());
+              app.set_notification(format!(
+                "Loading {}…",
+                truncate_for_notif(&item.title, 40)
+              ));
+              let authors = item.authors.join(", ");
+              ingestion::block_fetch::spawn(id, item.title.clone(), authors, tx);
+            } else {
+              log::debug!(
+                "feed Enter: spawning fulltext fetch for url={}",
+                item.url
+              );
+              let t = std::time::Instant::now();
+              app.fulltext_loading = true;
+              app.set_notification(format!(
+                "Fetching: {}…",
+                truncate_for_notif(&item.title, 40)
+              ));
+              let (tx, rx) = mpsc::channel();
+              app.fulltext_rx = Some(rx);
+              spawn_fulltext_fetch(item, tx);
+              log::debug!(
+                "feed Enter: fetch setup took {}µs",
+                t.elapsed().as_micros()
+              );
+            }
           }
         }
       }

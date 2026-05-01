@@ -20,11 +20,11 @@ pub const RIGHT_COL_WIDTH: u16 = 50;
 const WIDE_TITLE_MIN_WIDTH: u16 = 108;
 
 const TITLE_ART: &[&str] = &[
-  " ██████╗ ███╗  ██╗███████╗    ██████╗ ███████╗███████╗███████╗ █████╗ ██████╗  ██████╗██╗  ██╗",
-  "██╔═══██╗████╗ ██║██╔════╝    ██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝██║  ██║",
-  "██║   ██║██╔██╗██║█████╗      ██████╔╝█████╗  ███████╗█████╗  ███████║██████╔╝██║     ███████║",
-  "██║   ██║██║╚████║██╔══╝      ██╔══██╗██╔══╝  ╚════██║██╔══╝  ██╔══██║██╔══██╗██║     ██╔══██║",
-  "╚██████╔╝██║ ╚███║███████╗    ██║  ██║███████╗███████║███████╗██║  ██║██║  ██║╚██████╗██║  ██║",
+  " ██████  ███   ██ ███████     ██████  ███████ ███████ ███████  █████  ██████   ██████ ██   ██ ",
+  "██    ██ ████  ██ ██          ██   ██ ██      ██      ██      ██   ██ ██   ██ ██      ██   ██ ",
+  "██    ██ ██ ██ ██ █████       ██████  █████   ███████ █████   ███████ ██████  ██      ███████ ",
+  "██    ██ ██  ████ ██          ██   ██ ██           ██ ██      ██   ██ ██   ██ ██      ██   ██ ",
+  " ██████  ██   ███ ███████     ██   ██ ███████ ███████ ███████ ██   ██ ██   ██  ██████ ██   ██ ",
 ];
 const VERSION: &str = "v0.1.x";
 
@@ -38,6 +38,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
       draw_sources_popup(frame, app);
     }
     AppView::RepoViewer => draw_repo_viewer(frame, app),
+  }
+  // Abstract popup floats on top of the feed view.
+  if app.abstract_popup_active {
+    draw_abstract_popup(frame, app);
   }
   // Help overlay floats on top of whatever view is rendered.
   if app.help_active {
@@ -1670,9 +1674,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
   // Row 1: single-line hint
   let gray = Style::default().fg(t.text_dim);
   let feed_hint = if app.feed_tab == FeedTab::Discoveries {
-    "Ldr+d: inbox"
+    "Tab: inbox"
   } else {
-    "Ldr+d: discoveries"
+    "Tab: discoveries"
   };
   let hint_line = Line::from(Span::styled(
     format!("Ldr: ctrl+t  │  {feed_hint}  │  Ldr+?: help"),
@@ -1712,6 +1716,60 @@ fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 // ── A2 State 2: description popup over reader pane ────────────────────────
+
+fn draw_abstract_popup(frame: &mut Frame, app: &App) {
+  let t = app.active_theme.theme();
+  let area = frame.area();
+  let popup_w = (area.width * 70 / 100).max(40).min(area.width);
+  let popup_h = (area.height * 55 / 100).max(8).min(area.height);
+  let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+  let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+  let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+  frame.render_widget(Clear, popup_rect);
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(t.border_active))
+    .title(Span::styled(
+      " Abstract · Space/Esc to close ",
+      Style::default().fg(t.accent),
+    ));
+
+  let inner = block.inner(popup_rect);
+  frame.render_widget(block, popup_rect);
+
+  if inner.height == 0 {
+    return;
+  }
+
+  let Some(item) = app.selected_item() else { return };
+  let w = inner.width.saturating_sub(2) as usize;
+
+  let title_wrapped: Vec<Line> = textwrap::wrap(&item.title, w)
+    .into_iter()
+    .map(|s| Line::styled(s.to_string(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD)))
+    .collect();
+
+  let body_wrapped: Vec<Line> = if item.summary_short.is_empty() {
+    vec![Line::styled("No abstract available.", Style::default().fg(t.text_dim))]
+  } else {
+    textwrap::wrap(&item.summary_short, w)
+      .into_iter()
+      .map(|s| Line::styled(s.to_string(), Style::default().fg(t.text)))
+      .collect()
+  };
+
+  let mut lines: Vec<Line> = Vec::new();
+  lines.push(Line::raw(""));
+  lines.extend(title_wrapped);
+  lines.push(Line::raw(""));
+  lines.extend(body_wrapped);
+
+  let para = Paragraph::new(lines)
+    .wrap(Wrap { trim: false });
+  frame.render_widget(para, inner);
+}
 
 fn draw_narrow_feed_details_popup(frame: &mut Frame, app: &App, area: Rect) {
   let t = app.active_theme.theme();
@@ -2485,7 +2543,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("j / k", "Move down / up"),
       ("g / G", "Jump to top / bottom"),
       ("l / →", "Focus details pane"),
-      ("Tab", "Focus filter panel"),
+      ("Tab", "Switch Inbox / Discoveries"),
+      ("f", "Focus filter panel"),
       ("Enter", "Open paper in reader"),
       ("Esc", "Quit (from feed) / go back"),
       ("click", "Focus any pane"),
@@ -2500,7 +2559,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Ldr+Enter", "Open paper in floating popup"),
       ("Ldr+v", "Cycle reader layout (full→split→dual)"),
       ("Ldr+Esc", "Step back reader state"),
-      ("Ldr+d", "Switch Inbox / Discoveries tab"),
+      ("Ldr+s", "Open sources manager"),
       ("Ldr+n", "Toggle notes panel"),
       ("Ldr+c", "Toggle chat panel"),
       ("Ldr+z", "Move chat top / bottom"),
@@ -2527,7 +2586,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Filter panel", ""),
       ("Space", "Toggle filter at cursor"),
       ("c", "Clear all filters"),
-      ("Tab", "Return to feed"),
+      ("Tab / f", "Return to feed"),
     ],
   ),
   (
@@ -2551,7 +2610,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
   (
     "Discoveries",
     &[
-      ("Ldr+d", "Switch to Discoveries tab"),
+      ("Tab", "Switch Inbox / Discoveries"),
       ("/", "Open AI topic search"),
       ("", ""),
       ("Plan checklist", ""),

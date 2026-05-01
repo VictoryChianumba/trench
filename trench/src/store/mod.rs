@@ -61,3 +61,45 @@ pub fn save(state: &HashMap<String, WorkflowState>) {
     set_private(&path);
   }
 }
+
+// ── UI state (last_read, etc.) ─────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct UiState {
+  pub last_read:        Option<String>,
+  pub last_read_source: Option<String>,
+}
+
+fn ui_path() -> Option<PathBuf> {
+  let mut p = dirs_home()?;
+  p.push(".config");
+  p.push("trench");
+  p.push("ui.json");
+  Some(p)
+}
+
+pub fn load_ui() -> UiState {
+  let path = match ui_path() {
+    Some(p) => p,
+    None => return UiState::default(),
+  };
+  let bytes = match fs::read(&path) {
+    Ok(b) => b,
+    Err(_) => return UiState::default(),
+  };
+  serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+pub fn save_ui(state: &UiState) {
+  let path = match ui_path() {
+    Some(p) => p,
+    None => return,
+  };
+  if let Some(parent) = path.parent() {
+    let _ = fs::create_dir_all(parent);
+  }
+  if let Ok(json) = serde_json::to_vec_pretty(state) {
+    let _ = fs::write(&path, json);
+    set_private(&path);
+  }
+}

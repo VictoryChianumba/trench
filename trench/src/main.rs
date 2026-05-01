@@ -14,6 +14,7 @@ mod ui;
 mod workflows;
 
 use app::{App, DiscoverResult, FocusedReader, PaneId, RepoFetchResult};
+use block_reader;
 use crossterm::{
   event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
@@ -709,8 +710,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   app.active_theme = cfg.theme;
   app.config = cfg;
 
-  // Load persisted workflow states.
+  // Load persisted workflow states and UI state.
   app.persisted_states = store::load();
+  let ui = store::load_ui();
+  app.last_read        = ui.last_read;
+  app.last_read_source = ui.last_read_source;
 
   // 1. Load cache immediately → populate app.items.
   let cached = store::cache::load();
@@ -844,6 +848,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
+    // ── Drain block-reader fetch (arXiv papers) ───────────────────────
+    if let Some(rx) = app.block_reader_rx.as_ref() {
+      match rx.try_recv() {
+        Ok(result) => {
+          app.block_reader_rx = None;
+          app.block_reader_loading = false;
+          match result {
+            Ok((blocks, meta)) => {
+              app.clear_notification();
+              let key = app.block_reader_key.take();
+              // Suspend trench TUI, hand off to block_reader.
+              disable_raw_mode()?;
+              execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+              let _ = block_reader::run(blocks, Some(meta), key);
+              // Resume trench TUI.
+              enable_raw_mode()?;
+              execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+              terminal.clear()?;
+            }
+            Err(e) => {
+              app.block_reader_key = None;
+              app.set_notification(format!("Failed to load paper: {e}"));
+            }
+          }
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+          app.block_reader_rx = None;
+          app.block_reader_loading = false;
+          app.block_reader_key = None;
+          app.set_notification("Block fetch error: thread disconnected".to_string());
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+      }
+    }
+
     if let Some(rx) = app.repo_fetch_rx.as_ref() {
       let t = std::time::Instant::now();
       match rx.try_recv() {
@@ -930,6 +969,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
   }
+
+  store::save_ui(&store::UiState {
+    last_read:        app.last_read.clone(),
+    last_read_source: app.last_read_source.clone(),
+  });
 
   disable_raw_mode()?;
   execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;

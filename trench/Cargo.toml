@@ -22,9 +22,11 @@ serde_json = "1"
 arboard = "3"
 chrono = { version = "0.4", features = ["serde"] }
 notes = { path = "../crates/notes" }
-arxiv-render = { path = "../crates/arxiv-render" }
 chat = { path = "../crates/chat" }
 cli-text-reader = { path = "../cli-text-reader" }
+block-reader = { path = "../crates/block-reader" }
+doc-model = { path = "../crates/doc-model" }
+arxiv-render = { path = "../crates/arxiv-render" }
 syntect = "5"
 readability = "0.3"
 url = "2"

@@ -3951,12 +3951,15 @@ name = "trench"
 version = "0.1.19"
 dependencies = [
  "arboard",
+ "arxiv-render",
  "base64 0.22.1",
+ "block-reader",
  "chat",
  "chrono",
  "cli-text-reader",
  "crossterm",
  "dirs 5.0.1",
+ "doc-model",
  "env_logger",
  "html2text",
  "log",

@@ -139,7 +139,7 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 ## Bugs to fix
 - [ ] Voice mode broken in hygg rewrite (fix after ElevenLabs credits topped up)
 - [-] Chat scrolling not smooth — key repeat and trackpad inertia (partially fixed)
-- [ ] Raw ANSI escape codes leaking into right pane in reader mode
+- [x] Raw ANSI escape codes leaking into right pane in reader mode (strip_ansi fixed: CSI + OSC sequences now fully stripped)
 - [x] Notes opening on vim `n` keypress — fixed, leader key now required
 
 ## Leader key (Ctrl+T) — app-wide
@@ -175,7 +175,7 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 
 ## Dashboard / Home view
 - [x] Add a home/dashboard screen as the default landing view — shown in wider details pane until first navigation; sections: Continue Reading, Your Queue, At a Glance (counts), Recent (last 48h), footer (provider + sources)
-- [ ] Persist last_read across sessions (write to ~/.config/trench/state.json)
+- [x] Persist last_read across sessions (store/ui.json; load on startup, save on quit)
 - [ ] Recent research topic tracking (deferred — needs design)
 - [ ] Show active AI model in use
 - [ ] Show last read paper (title, source, position) with quick-resume action
@@ -251,21 +251,27 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 - [x] Width-aware reflow when TOC toggles (content_width_for helper, rebuild on toggle/resize)
 - [x] Back-navigation stack: `Ctrl+O` to return to previous position after jump
 - [x] Paper metadata header bar — title, authors pinned above content
-- [ ] `?` help overlay showing all block-reader keybindings
-- [ ] Bookmarks — mark a line, jump back to it
+- [x] `?` help overlay showing all block-reader keybindings
+- [x] Bookmarks — `m` to toggle, `'` to jump forward; persisted per arXiv ID; amber highlight
+- [x] `PageUp`/`PageDown` full-page scroll; `{`/`}` paragraph jump; `H`/`M`/`L` screen top/mid/bottom; `z` center cursor
+- [x] `*` search word under cursor; `h`/`l` column cursor movement
+- [x] Previous bookmark — `` ` `` cycles bookmarks backward (pairs with `'` forward)
+- [x] `y` yank current line to clipboard via OSC 52
+- [x] Count prefix for motions — `5j`, `10G`, `3]`, etc.; shown in status bar during entry
+- [x] Visual mode — `v` char select, `V` line select; `j`/`k`/`h`/`l` extend; `y` yank selection; `Esc` cancel
 
 ### Persistence and integration
 - [x] Reading progress persistence per arXiv ID (~/.config/trench/reader_progress.json)
-- [ ] Wire block-reader into trench (currently siloed on feat/block-model branch)
-- [ ] Abstract quick-view from feed: `Space` shows summary popup without entering reader
+- [x] Wire block-reader into trench — arXiv `Enter` routes to block-reader; TUI suspend/resume
+- [x] Abstract quick-view from feed: `Space` shows summary popup without entering reader
 
-### Text styling (not yet implemented)
-- [ ] Bold text — `\textbf{}` → Modifier::BOLD
-- [ ] Italic — `\textit{}`, `\emph{}` → Modifier::ITALIC
-- [ ] Underline — `\underline{}` → Modifier::UNDERLINED
-- [ ] Strikethrough — `\sout{}` → Modifier::CROSSED_OUT
-- [ ] Monospace — `\texttt{}`, `\verb`, `verbatim` blocks → distinct colour
-- [ ] Coloured text — `\textcolor{}` → ratatui fg()
+### Text styling (complete)
+- [x] Bold text — `\textbf{}` → Modifier::BOLD
+- [x] Italic — `\textit{}`, `\emph{}` → Modifier::ITALIC
+- [x] Underline — `\underline{}` → Modifier::UNDERLINED
+- [x] Strikethrough — `\sout{}` → Modifier::CROSSED_OUT
+- [x] Monospace — `\texttt{}`, `\verb`, `verbatim` blocks → distinct colour
+- [x] Coloured text — `\textcolor{}` → ratatui fg()
 
 ### Structure and numbering
 - [x] Numbered sections — "1  Introduction", "2.1  Background"
@@ -279,8 +285,8 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 ### Environments
 - [x] Algorithm / pseudocode blocks — plain text render (parse_algorithmic_body)
 - [x] Code listings (`lstlisting`, `verbatim`) — CodeBlock with language tag
-- [ ] Nested lists — list within list, indent tracks depth
-- [ ] Table horizontal rules — `\hline`, `\toprule`, `\midrule`, `\bottomrule` as `─────` separators
+- [x] Nested lists — list within list, indent tracks depth (depth * 2 indent in wrap_list_item)
+- [x] Table horizontal rules — `\hline`, `\toprule`, `\midrule`, `\bottomrule` as `─────` separators (parse_tabular returns Vec<Block>)
 
 ### Math rendering
 - [x] Silent garbling fix — backslash in tui-math output triggers strip_latex fallback
@@ -290,7 +296,7 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 
 ### Navigation and cross-document UX
 - [ ] Cross-reference jumping — Enter on `[ref]` / `Figure 3` jumps to target
-- [ ] Terminal hyperlinks — `\url{}` and `\href{}` as OSC 8 clickable links
+- [x] Terminal hyperlinks — `\url{}` and `\href{}` as OSC 8 clickable links (InlineSpan.url field; underline fallback for non-OSC 8 terminals)
 - [ ] `[ref]` markers → expandable citations overlay (press Enter to expand inline)
 
 ### Hard but achievable
@@ -303,8 +309,8 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 - [x] Block::ListItem { depth, marker, content } — typed list items
 - [x] Block::CodeBlock { lang, lines } — verbatim/listing with language tag
 - [x] Block::Rule — horizontal separator
-- [ ] Block::Quote — blockquote / epigraph styling
-- [ ] Bold/italic/monospace rendered with ratatui Modifier in block-reader (infrastructure exists, render.rs not yet wired)
+- [x] Block::Quote — blockquote / epigraph styling (quote/quotation/epigraph → italic, 4-space indent)
+- [x] Bold/italic/monospace/underline/strikethrough/color rendered in block-reader via VisualLineKind::StyledProse
 
 ### "Cannot achieve" — to be solved
 - [ ] Images and figures — currently: no pixel graphics in TTY/tmux. Path forward: Kitty graphics protocol with tmux passthrough, or sixel, or inline SVG-to-ASCII fallback for simple diagrams

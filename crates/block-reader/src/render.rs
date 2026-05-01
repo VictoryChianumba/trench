@@ -4,7 +4,7 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, Borders, Paragraph},
+  widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::state::{Mode, Reader, TOC_WIDTH};
@@ -20,6 +20,7 @@ const CODE_BG: Color = Color::Rgb(20, 25, 35);
 const CODE_FG: Color = Color::Rgb(160, 200, 180);
 const RULE_COLOR: Color = Color::Rgb(55, 65, 80);
 const HEADER_BG: Color = Color::Rgb(12, 17, 27);
+const VISUAL_SEL: Color = Color::Rgb(40, 65, 105);
 
 pub fn draw(frame: &mut Frame, reader: &Reader) {
   let area = frame.area();
@@ -36,6 +37,9 @@ pub fn draw(frame: &mut Frame, reader: &Reader) {
   draw_status(frame, reader, status_area);
   if reader.mode == Mode::Search {
     draw_search_bar(frame, reader, search_area.unwrap());
+  }
+  if reader.help_visible {
+    draw_help_overlay(frame, area);
   }
 }
 
@@ -66,7 +70,7 @@ fn split_layout(
   };
 
   let (content_area, status_area, search_area) = match reader.mode {
-    Mode::Normal => {
+    Mode::Normal | Mode::Visual { .. } => {
       let v = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -102,6 +106,15 @@ fn draw_content(frame: &mut Frame, reader: &Reader, area: Rect) {
   let total = reader.total_lines();
   let q = reader.search_query.to_lowercase();
 
+  let visual_range: Option<(usize, usize)> = match &reader.mode {
+    Mode::Visual { .. } => {
+      let cur = reader.current_line();
+      let anchor = reader.visual_anchor;
+      Some((cur.min(anchor), cur.max(anchor)))
+    }
+    _ => None,
+  };
+
   let lines: Vec<Line> = (0..ch)
     .map(|row| {
       let vl_idx = reader.offset + row;
@@ -110,7 +123,10 @@ fn draw_content(frame: &mut Frame, reader: &Reader, area: Rect) {
       }
       let vl = &reader.visual_lines[vl_idx];
       let is_cursor = row == reader.cursor_y;
-      render_visual_line(vl, is_cursor, &q, &reader.search_matches, vl_idx)
+      let is_bookmarked = reader.bookmarks.binary_search(&vl_idx).is_ok();
+      let is_selected = visual_range.map_or(false, |(lo, hi)| vl_idx >= lo && vl_idx <= hi);
+      let cursor_col = if is_cursor { Some(reader.cursor_x) } else { None };
+      render_visual_line(vl, is_cursor, is_bookmarked, is_selected, cursor_col, &q, &reader.search_matches, vl_idx)
     })
     .collect();
 
@@ -120,21 +136,41 @@ fn draw_content(frame: &mut Frame, reader: &Reader, area: Rect) {
 
 fn render_visual_line<'a>(
   vl: &'a doc_model::VisualLine,
-  is_cursor: bool,
+  _is_cursor: bool,
+  is_bookmarked: bool,
+  is_selected: bool,
+  cursor_col: Option<usize>,
   query: &str,
   matches: &[usize],
   vl_idx: usize,
 ) -> Line<'a> {
   let text = &vl.text;
-  let bg = if is_cursor { Color::Rgb(30, 40, 55) } else { Color::Reset };
+  let bg = if is_selected {
+    VISUAL_SEL
+  } else if is_bookmarked {
+    Color::Rgb(55, 45, 15)
+  } else {
+    Color::Reset
+  };
 
   let base_style = Style::default().bg(bg);
 
   match &vl.kind {
-    VisualLineKind::Blank => Line::styled("", base_style),
+    VisualLineKind::Blank => {
+      if cursor_col.is_some() {
+        Line::from(vec![Span::styled(
+          " ",
+          Style::default().bg(Color::White).fg(Color::Black),
+        )])
+      } else {
+        Line::styled("", base_style)
+      }
+    }
 
     VisualLineKind::Prose => {
-      if !query.is_empty() && matches.contains(&vl_idx) {
+      if let Some(col) = cursor_col {
+        apply_char_cursor(text, col, bg)
+      } else if !query.is_empty() && matches.contains(&vl_idx) {
         highlight_query(text, query, bg)
       } else {
         Line::styled(text.clone(), base_style)
@@ -151,7 +187,11 @@ fn render_visual_line<'a>(
         2 => (ACCENT_DIM, Modifier::BOLD),
         _ => (ACCENT_DIM, Modifier::empty()),
       };
-      Line::styled(text.clone(), base_style.fg(fg).add_modifier(modifier))
+      if let Some(col) = cursor_col {
+        apply_char_cursor(text, col, bg)
+      } else {
+        Line::styled(text.clone(), base_style.fg(fg).add_modifier(modifier))
+      }
     }
 
     VisualLineKind::MatrixLine { is_first, is_last } => {
@@ -171,7 +211,13 @@ fn render_visual_line<'a>(
           if s.strikethrough { style = style.add_modifier(Modifier::CROSSED_OUT); }
           if s.monospace   { style = style.fg(MONO_COLOR); }
           if let Some((r, g, b)) = s.color { style = style.fg(Color::Rgb(r, g, b)); }
-          Span::styled(s.text.clone(), style)
+          if let Some(url) = &s.url {
+            // OSC 8 clickable link: terminals that don't support it show plain text.
+            let linked = format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, s.text);
+            Span::styled(linked, style)
+          } else {
+            Span::styled(s.text.clone(), style)
+          }
         }).collect();
         Line::from(ratatui_spans)
       }
@@ -179,7 +225,9 @@ fn render_visual_line<'a>(
 
     VisualLineKind::ListItem { .. } => {
       // text already contains indent + marker prefix from build_visual_lines.
-      if !query.is_empty() && matches.contains(&vl_idx) {
+      if let Some(col) = cursor_col {
+        apply_char_cursor(text, col, bg)
+      } else if !query.is_empty() && matches.contains(&vl_idx) {
         highlight_query(text, query, bg)
       } else {
         Line::styled(text.clone(), base_style)
@@ -197,7 +245,45 @@ fn render_visual_line<'a>(
     VisualLineKind::Rule => {
       Line::styled(text.clone(), Style::default().fg(RULE_COLOR))
     }
+
+    VisualLineKind::Quote { .. } => {
+      Line::styled(
+        format!("    {}", text),
+        base_style
+          .fg(Color::Rgb(140, 150, 170))
+          .add_modifier(Modifier::ITALIC),
+      )
+    }
   }
+}
+
+/// Render a line with a single character highlighted at `byte_col` (the cursor position).
+/// Used to show cursor_x within the current line in Normal mode.
+fn apply_char_cursor(text: &str, byte_col: usize, bg: Color) -> Line<'static> {
+  if text.is_empty() {
+    return Line::from(vec![Span::styled(
+      " ",
+      Style::default().bg(Color::White).fg(Color::Black),
+    )]);
+  }
+  // Snap to nearest valid char boundary at or before byte_col.
+  let safe = (0..=byte_col.min(text.len()))
+    .rev()
+    .find(|&i| text.is_char_boundary(i))
+    .unwrap_or(0);
+  let before = &text[..safe];
+  let mut rest_chars = text[safe..].chars();
+  let cur: String = rest_chars.next().map(|c| c.to_string()).unwrap_or_else(|| " ".to_string());
+  let after: String = rest_chars.collect();
+  let mut spans: Vec<Span<'static>> = Vec::new();
+  if !before.is_empty() {
+    spans.push(Span::styled(before.to_string(), Style::default().bg(bg)));
+  }
+  spans.push(Span::styled(cur, Style::default().bg(Color::White).fg(Color::Black)));
+  if !after.is_empty() {
+    spans.push(Span::styled(after, Style::default().bg(bg)));
+  }
+  Line::from(spans)
 }
 
 fn highlight_query(text: &str, query: &str, bg: Color) -> Line<'static> {
@@ -330,7 +416,18 @@ fn draw_status(frame: &mut Frame, reader: &Reader, area: Rect) {
   } else {
     String::new()
   };
-  let text = format!(" {cur}/{tot}  {pct}%{match_info}");
+  let mode_str = match &reader.mode {
+    Mode::Normal | Mode::Search => String::new(),
+    Mode::Visual { line_mode } => {
+      if *line_mode { "  VISUAL LINE".to_string() } else { "  VISUAL".to_string() }
+    }
+  };
+  let count_str = if !reader.count_buf.is_empty() {
+    format!("  {}_", reader.count_buf)
+  } else {
+    String::new()
+  };
+  let text = format!(" {cur}/{tot}  {pct}%{match_info}{mode_str}{count_str}");
   let status = Paragraph::new(text)
     .style(Style::default().bg(Color::Rgb(25, 35, 50)).fg(Color::DarkGray));
   frame.render_widget(status, area);
@@ -341,4 +438,79 @@ fn draw_search_bar(frame: &mut Frame, reader: &Reader, area: Rect) {
   let bar = Paragraph::new(text)
     .style(Style::default().bg(Color::Rgb(25, 35, 50)).fg(Color::White));
   frame.render_widget(bar, area);
+}
+
+fn draw_help_overlay(frame: &mut Frame, area: Rect) {
+  const W: u16 = 64;
+  const H: u16 = 22;
+  let x = area.x + area.width.saturating_sub(W) / 2;
+  let y = area.y + area.height.saturating_sub(H) / 2;
+  let popup = Rect { x, y, width: W.min(area.width), height: H.min(area.height) };
+
+  let help_bg = Color::Rgb(18, 22, 34);
+  let key_fg = Color::Rgb(100, 181, 246);
+  let dim_fg = Color::Rgb(120, 130, 150);
+  let sec_fg = Color::Rgb(80, 95, 115);
+
+  let rows: &[(&str, &str, &str, &str)] = &[
+    ("j / k",         "scroll down / up",       "] / [",    "next / prev section"),
+    ("PageDn / Up",   "full page scroll",        "Ctrl+d/u", "half page"),
+    ("} / {",         "next / prev paragraph",   "H / M / L","screen top/mid/bottom"),
+    ("g / G",         "top / bottom",            "z",        "center cursor"),
+    ("h / l",         "cursor ← / →",            "5j  10G",  "count prefix"),
+    ("*",             "search word under cursor", "Ctrl+O",   "go back"),
+    ("/  n  N",       "search / next / prev",     "m  '  `",  "bookmark: set/fwd/back"),
+    ("y",             "yank line (OSC 52)",        "t",        "toggle TOC"),
+    ("q / Esc",       "quit",                     "?",        "this help"),
+  ];
+
+  let visual_rows: &[(&str, &str)] = &[
+    ("v / V",         "enter char / line visual mode"),
+    ("j / k  h / l",  "extend selection"),
+    ("y",             "yank selection to clipboard"),
+    ("Esc / v / V",   "cancel visual mode"),
+  ];
+
+  let mut lines: Vec<Line> = vec![
+    Line::styled(
+      "  Keybindings",
+      Style::default().fg(key_fg).add_modifier(Modifier::BOLD),
+    ),
+    Line::raw(""),
+  ];
+  for (k1, d1, k2, d2) in rows {
+    let left  = format!("  {:<14} {:<24}", k1, d1);
+    let right = format!("{:<10} {}", k2, d2);
+    lines.push(Line::from(vec![
+      Span::styled(left,  Style::default().fg(key_fg)),
+      Span::styled(right, Style::default().fg(dim_fg)),
+    ]));
+  }
+  lines.push(Line::raw(""));
+  lines.push(Line::styled(
+    "  Visual mode",
+    Style::default().fg(sec_fg).add_modifier(Modifier::BOLD),
+  ));
+  for (k, d) in visual_rows {
+    lines.push(Line::from(vec![
+      Span::styled(format!("  {:<16} ", k), Style::default().fg(key_fg)),
+      Span::styled(d.to_string(), Style::default().fg(dim_fg)),
+    ]));
+  }
+  lines.push(Line::raw(""));
+  lines.push(Line::styled(
+    "  Press any key to dismiss",
+    Style::default().fg(dim_fg),
+  ));
+
+  frame.render_widget(Clear, popup);
+  let widget = Paragraph::new(lines)
+    .style(Style::default().bg(help_bg))
+    .block(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().bg(help_bg)),
+    );
+  frame.render_widget(widget, popup);
 }

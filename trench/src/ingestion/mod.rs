@@ -1,4 +1,5 @@
 pub mod arxiv;
+pub mod block_fetch;
 pub mod fulltext;
 pub mod huggingface;
 pub mod message;
