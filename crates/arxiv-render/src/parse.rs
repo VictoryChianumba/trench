@@ -104,7 +104,10 @@ pub fn to_blocks(sources: Vec<(String, String)>) -> Vec<Block> {
   let title = extract_command_arg(&expanded, "title").map(clean_inline);
   let authors = extract_command_arg(&expanded, "author").map(clean_authors);
 
-  let body = extract_body(&expanded);
+  let body_raw = extract_body(&expanded);
+  // Strip comments before float reordering so we don't match %\begin{table} in comments.
+  let body_stripped = strip_tex_comments(&body_raw);
+  let body = float_tables_into_sections(&body_stripped);
   let mut footnotes: Vec<String> = Vec::new();
   let body_blocks = process(&body, &macros, &mut footnotes);
 
@@ -201,6 +204,85 @@ fn extract_body(content: &str) -> String {
     .unwrap_or(0);
   let end = content.rfind(r"\end{document}").unwrap_or(content.len());
   content[start..end].to_string()
+}
+
+// ── Float reordering ─────────────────────────────────────────────────────────
+
+/// Move `\begin{table}...\end{table}` blocks that appear immediately before a
+/// `\section` or `\subsection` to just after that heading.
+///
+/// This corrects the common LaTeX pattern of defining a float at the very start
+/// of an `\input{}` file (before the section command), trusting the LaTeX float
+/// algorithm to position it on the right page. Example: BERT's glue_official_tab.tex.
+fn float_tables_into_sections(body: &str) -> String {
+  const SECTION_CMDS: &[&str] = &[r"\section{", r"\subsection{", r"\section*{", r"\subsection*{"];
+
+  let mut result = body.to_string();
+  let mut changed = true;
+  while changed {
+    changed = false;
+    for (begin_tag, end_tag) in &[(r"\begin{table}", r"\end{table}"), (r"\begin{table*}", r"\end{table*}")] {
+      if let Some(reordered) = try_move_table_before_section(&result, begin_tag, end_tag, SECTION_CMDS) {
+        result = reordered;
+        changed = true;
+        break;
+      }
+    }
+  }
+  result
+}
+
+fn try_move_table_before_section(
+  text: &str,
+  begin_tag: &str,
+  end_tag: &str,
+  section_cmds: &[&str],
+) -> Option<String> {
+  let t_start = text.find(begin_tag)?;
+  // Find the matching \end{table}.
+  let after_begin = t_start + begin_tag.len();
+  let end_rel = text[after_begin..].find(end_tag)?;
+  let t_end = after_begin + end_rel + end_tag.len();
+
+  // Skip any \footnotetext{...} commands that follow directly.
+  let mut cursor = t_end;
+  loop {
+    let after_ws = cursor + (text[cursor..].len() - text[cursor..].trim_start().len());
+    if text[after_ws..].starts_with(r"\footnotetext{") {
+      let brace_start = after_ws + r"\footnotetext".len();
+      if text[brace_start..].starts_with('{') {
+        let chars: Vec<char> = text[brace_start..].chars().collect();
+        let (_, adv) = read_braced_arg(&chars, 0);
+        cursor = brace_start + adv;
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+  let after_table = cursor; // byte position right after table + footnotetext
+
+  // Skip whitespace to first significant content.
+  let rest = text[after_table..].trim_start();
+  let ws_len = text[after_table..].len() - rest.len();
+  let sec_pos = after_table + ws_len;
+
+  // Check if that content is a section/subsection command.
+  let sec_cmd = section_cmds.iter().find(|&&sc| rest.starts_with(sc))?;
+
+  // Find the end of the section command (up to and including the closing brace).
+  let brace_offset = rest.find('{')?;
+  let chars: Vec<char> = rest[brace_offset..].chars().collect();
+  let (_, adv) = read_braced_arg(&chars, 0);
+  let sec_end = sec_pos + brace_offset + adv;
+
+  // Build reordered text: [before table][section cmd]\n[table block][rest after section]
+  let before = &text[..t_start];
+  let table_block = &text[t_start..after_table];
+  let section_text = &text[sec_pos..sec_end];
+  let after_section = &text[sec_end..];
+  Some(format!("{before}{section_text}\n{table_block}{after_section}"))
 }
 
 // ── Label map (two-pass cross-reference resolution) ──────────────────────────
@@ -507,7 +589,8 @@ fn process_body(
             let (body_text, adv) = read_until_end(&text, i, &env);
             i += adv;
             flush_builder(&mut builder, &mut list_item_pending, &mut out);
-            out.extend(parse_tabular(&body_text));
+            let expanded_body = expand_zero_arg_macros(&body_text, macros);
+            out.extend(parse_tabular(&expanded_body));
             continue;
           }
 
@@ -1440,16 +1523,32 @@ fn clean_bib_entry(s: &str) -> String {
   out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Move table groups (Rule/Matrix blocks + optional "[Table:...]" caption) that
+/// appear directly before a section heading to just after that heading.
+/// This corrects for LaTeX float placement: authors often write \begin{table}
+/// in the source just before the section that discusses it, expecting the float
+/// algorithm to position it at the top of that section's page.
 fn wrap_blocks(blocks: Vec<Block>) -> Vec<Block> {
   let mut out = Vec::new();
+  let mut last_was_blank = false;
   for block in blocks {
     match block {
+      Block::Blank => {
+        if !last_was_blank {
+          out.push(Block::Blank);
+          last_was_blank = true;
+        }
+      }
       Block::Line(s) => {
+        last_was_blank = false;
         for wrapped in textwrap::wrap(&s, WRAP_WIDTH) {
           out.push(Block::Line(wrapped.to_string()));
         }
       }
-      other => out.push(other),
+      other => {
+        last_was_blank = false;
+        out.push(other);
+      }
     }
   }
   out
@@ -1561,13 +1660,22 @@ fn peel_row_prefix(mut text: &str) -> (bool, &str) {
       Some(&r) => {
         had_rule = true;
         let after = &t[r.len()..];
-        // Skip optional braced args: \cmidrule{2-3}, \specialrule{w}{a}{b}
+        // Skip optional paren group first: \cmidrule(lr){2-3}
+        let after = skip_paren_group(after);
+        // Then skip zero or more braced args: \cmidrule{2-3}, \specialrule{w}{a}{b}
         let after = skip_braced_args(after);
         text = after;
       }
     }
   }
   (had_rule, text)
+}
+
+/// Skip one optional leading `(...)` group (for `\cmidrule(lr)`, `\cmidrule(r)`, etc.).
+fn skip_paren_group(s: &str) -> &str {
+  let t = s.trim_start();
+  if !t.starts_with('(') { return t; }
+  t.find(')').map_or(t, |end| &t[end + 1..])
 }
 
 /// Skip zero or more leading `{...}` groups (used after rule commands).
@@ -1590,6 +1698,36 @@ fn skip_braced_args(mut s: &str) -> &str {
     if end == 0 { return t; }
     s = &t[end..];
   }
+}
+
+/// Split a tabular row into `(content, col_span)` pairs.
+/// `\multicolumn{N}{align}{content}` → `(content, N)`; ordinary cells → `(cell, 1)`.
+/// `\&` is preserved as a literal `&` within a cell (not a column separator).
+fn split_with_spans(row: &str) -> Vec<(String, usize)> {
+  split_tabular_cells(row)
+    .into_iter()
+    .map(|cell| {
+      let t = cell.trim();
+      if t.starts_with(r"\multicolumn") {
+        parse_multicolumn_cell(t).unwrap_or_else(|| (t.to_string(), 1))
+      } else {
+        (t.to_string(), 1)
+      }
+    })
+    .collect()
+}
+
+/// Parse `\multicolumn{N}{align}{content}` → `(content, N)`.
+fn parse_multicolumn_cell(s: &str) -> Option<(String, usize)> {
+  let rest = s.trim_start_matches(r"\multicolumn");
+  let chars: Vec<char> = rest.chars().collect();
+  let mut i = 0;
+  while i < chars.len() && chars[i] == ' ' { i += 1; }
+  let (n_str, s1) = read_braced_arg(&chars, i); i += s1;
+  let (_align, s2) = read_braced_arg(&chars, i); i += s2;
+  let (content, _) = read_braced_arg(&chars, i);
+  let n = n_str.trim().parse::<usize>().ok()?.max(1);
+  Some((content, n))
 }
 
 /// Split a tabular row on `&` while respecting `\&` (escaped ampersand = literal `&` in content).
@@ -1630,7 +1768,7 @@ fn parse_tabular(body: &str) -> Vec<Block> {
 
   let cleaned = strip_tex_comments(body);
   let mut blocks: Vec<Block> = Vec::new();
-  let mut current_rows: Vec<Vec<String>> = Vec::new();
+  let mut current_rows: Vec<Vec<(String, usize)>> = Vec::new();
 
   for raw_row in cleaned.split(r"\\") {
     let (had_rule, data_text) = peel_row_prefix(raw_row);
@@ -1644,11 +1782,11 @@ fn parse_tabular(body: &str) -> Vec<Block> {
     if trimmed_data.is_empty() {
       continue;
     }
-    let cells: Vec<String> = split_tabular_cells(trimmed_data)
+    let cells: Vec<(String, usize)> = split_with_spans(trimmed_data)
       .into_iter()
-      .map(|cell| clean_inline(cell.trim().to_string()))
+      .map(|(cell, span)| (clean_inline(cell), span))
       .collect();
-    let has_content = cells.iter().any(|c| !c.is_empty());
+    let has_content = cells.iter().any(|(c, _)| !c.is_empty());
     if has_content {
       current_rows.push(cells);
     }
