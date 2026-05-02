@@ -107,7 +107,8 @@ pub fn to_blocks(sources: Vec<(String, String)>) -> Vec<Block> {
   let body_raw = extract_body(&expanded);
   // Strip comments before float reordering so we don't match %\begin{table} in comments.
   let body_stripped = strip_tex_comments(&body_raw);
-  let body = float_tables_into_sections(&body_stripped);
+  let body_floated = float_tables_into_sections(&body_stripped);
+  let body = reorder_t_floats(&body_floated);
   let mut footnotes: Vec<String> = Vec::new();
   let body_blocks = process(&body, &macros, &mut footnotes);
 
@@ -269,7 +270,7 @@ fn try_move_table_before_section(
   let sec_pos = after_table + ws_len;
 
   // Check if that content is a section/subsection command.
-  let sec_cmd = section_cmds.iter().find(|&&sc| rest.starts_with(sc))?;
+  let _sec_cmd = section_cmds.iter().find(|&&sc| rest.starts_with(sc))?;
 
   // Find the end of the section command (up to and including the closing brace).
   let brace_offset = rest.find('{')?;
@@ -283,6 +284,135 @@ fn try_move_table_before_section(
   let section_text = &text[sec_pos..sec_end];
   let after_section = &text[sec_end..];
   Some(format!("{before}{section_text}\n{table_block}{after_section}"))
+}
+
+// ── Top-float reordering ─────────────────────────────────────────────────────
+
+/// Moves \begin{table}[t] / \begin{table*}[t] floats to a more natural terminal
+/// reading position:
+///
+/// Case A – prose separates the enclosing section heading from the table →
+///   move the table to immediately after the heading (section top).
+///
+/// Case B – no prose between a \subsection and the table, AND the subsection is
+///   itself the very first content of its parent \section (no prose between
+///   \section and \subsection) → move the table to after the parent \section.
+///
+/// All other [t] tables are left in place.
+fn reorder_t_floats(body: &str) -> String {
+  const VARIANTS: &[(&str, &str)] = &[
+    (r"\begin{table}", r"\end{table}"),
+    (r"\begin{table*}", r"\end{table*}"),
+  ];
+  const ALL_HEADS: &[&str] = &[r"\section{", r"\subsection{", r"\section*{", r"\subsection*{"];
+  const SEC_ONLY: &[&str]  = &[r"\section{", r"\section*{"];
+
+  let mut text = body.to_string();
+  let mut scan_from = 0usize;
+
+  loop {
+    let Some((t_start, t_end)) = next_t_float(&text, scan_from, VARIANTS) else { break };
+
+    let before_table = &text[..t_start];
+    let Some((h_start, h_end, is_sub)) = prev_section(before_table, ALL_HEADS) else {
+      scan_from = t_end;
+      continue;
+    };
+
+    let gap = &text[h_end..t_start];
+
+    if gap_has_prose(gap) {
+      // Case A: prose before the table — move table to top of enclosing section.
+      text = splice_before(&text, h_end, t_start, t_end);
+      scan_from = 0;
+      continue;
+    }
+
+    if is_sub {
+      // Case B: subsection is table's nearest heading with no prose.
+      // If that subsection is itself the first content of its parent \section,
+      // move the table to after the parent \section.
+      let before_sub = &text[..h_start];
+      if let Some((_, p_end, _)) = prev_section(before_sub, SEC_ONLY) {
+        if !gap_has_prose(&text[p_end..h_start]) {
+          text = splice_before(&text, p_end, t_start, t_end);
+          scan_from = 0;
+          continue;
+        }
+      }
+    }
+
+    scan_from = t_end;
+  }
+
+  text
+}
+
+/// Return the start and end of the next `\begin{table[*]}[...t...]` from `from`.
+fn next_t_float(text: &str, from: usize, variants: &[(&str, &str)]) -> Option<(usize, usize)> {
+  let mut pos = from;
+  loop {
+    // Pick the earliest begin tag among all variants.
+    let (t_start, begin_tag, end_tag) = variants
+      .iter()
+      .filter_map(|&(bt, et)| text[pos..].find(bt).map(|r| (pos + r, bt, et)))
+      .min_by_key(|&(s, _, _)| s)?;
+
+    let after_begin = t_start + begin_tag.len();
+
+    // Require a placement specifier containing 't'.
+    let has_t = text[after_begin..].starts_with('[') && {
+      let close = text[after_begin..].find(']').unwrap_or(0);
+      text[after_begin..after_begin + close + 1].contains('t')
+    };
+
+    if !has_t {
+      pos = t_start + 1;
+      continue;
+    }
+
+    let t_end = after_begin + text[after_begin..].find(end_tag)? + end_tag.len();
+    return Some((t_start, t_end));
+  }
+}
+
+/// Find the last section/subsection command in `text`.
+/// Returns (cmd_start, cmd_end_after_closing_brace, is_subsection).
+fn prev_section(text: &str, cmds: &[&str]) -> Option<(usize, usize, bool)> {
+  cmds.iter()
+    .filter_map(|&cmd| {
+      let s = text.rfind(cmd)?;
+      // cmd ends with '{'; the opening brace is at s + cmd.len() - 1.
+      let brace_pos = s + cmd.len() - 1;
+      let chars: Vec<char> = text[brace_pos..].chars().collect();
+      let (_, adv) = read_braced_arg(&chars, 0);
+      Some((s, brace_pos + adv, cmd.contains("subsection")))
+    })
+    .max_by_key(|&(s, _, _)| s)
+}
+
+/// True if `gap` contains at least 4 prose words (tokens ≥4 alphabetic chars,
+/// not starting with `\` or `{`).  This distinguishes body text from LaTeX
+/// structural commands like `\label{}`, `\vspace{}`, blank lines, etc.
+fn gap_has_prose(gap: &str) -> bool {
+  gap.split_whitespace()
+    .filter(|t| {
+      !t.starts_with('\\') && !t.starts_with('{') && !t.starts_with('%')
+        && t.chars().filter(|c| c.is_alphabetic()).count() >= 4
+    })
+    .count() >= 4
+}
+
+/// Move `text[t_start..t_end]` to immediately after `insert_after`,
+/// preserving all other text in order.
+fn splice_before(text: &str, insert_after: usize, t_start: usize, t_end: usize) -> String {
+  format!(
+    "{}\n{}{}{}",
+    &text[..insert_after],
+    &text[t_start..t_end],
+    &text[insert_after..t_start],
+    &text[t_end..]
+  )
 }
 
 // ── Label map (two-pass cross-reference resolution) ──────────────────────────
