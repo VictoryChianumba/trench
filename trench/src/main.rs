@@ -828,6 +828,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut loading_sources = vec![
       "arxiv".to_string(),
       "huggingface".to_string(),
+      "papers_with_code".to_string(),
+      "openreview".to_string(),
+      "core".to_string(),
       "openai".to_string(),
       "deepmind".to_string(),
       "import_ai".to_string(),
