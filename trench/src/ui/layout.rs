@@ -745,8 +745,15 @@ fn draw_discovery_searchbar(frame: &mut Frame, app: &App, area: Rect) {
   let t = app.active_theme.theme();
   let w = area.width as usize;
   let has_session = !app.discovery_session.is_empty();
+  let intent_label = app.discovery_intent.label();
 
-  let badge = if has_session { " [session]" } else { "" };
+  let session_badge = if has_session { " [session]" } else { "" };
+  let intent_badge = if intent_label != "papers" {
+    format!(" [{intent_label}]")
+  } else {
+    String::new()
+  };
+  let badge = format!("{session_badge}{intent_badge}");
   let sep_width = w.saturating_sub(14 + badge.len());
   let sep = "─".repeat(sep_width);
   let sep_line = Line::from(Span::styled(

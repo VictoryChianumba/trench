@@ -6,13 +6,14 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::discovery::{DiscoveryMessage, tools};
+use crate::discovery::intent::QueryIntent;
 
 const MAX_ITERATIONS: usize = 8;
 const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
 const MODEL: &str = "claude-sonnet-4-6";
 
-const SYSTEM: &str = "\
+const SYSTEM_FIND: &str = "\
 You are a research discovery agent for an AI/ML paper reader called Trench. \
 Find the most relevant research papers for the user's query using the available tools.
 
@@ -24,13 +25,85 @@ Guidelines:
 - Aim for 5-25 relevant papers total. Stop when you have good coverage.
 - After finding papers, write a concise 2-3 sentence summary of what you found.";
 
+const SYSTEM_LIT_REVIEW: &str = "\
+You are a research discovery agent for an AI/ML paper reader called Trench. \
+Find papers and produce a structured literature review.
+
+Guidelines:
+- Call search_arxiv 3-4 times with different angles to get broad coverage.
+- After finding papers, write a structured review using EXACTLY this format:
+
+## Consensus
+(2-3 sentences: what the papers broadly agree on)
+
+## Active Debates
+(2-3 sentences: areas of genuine disagreement or competing approaches)
+
+## Open Questions
+(2-3 sentences: unsolved problems the papers identify)";
+
+const SYSTEM_SOTA: &str = "\
+You are a research discovery agent for an AI/ML paper reader called Trench. \
+Find papers reporting state-of-the-art results and summarise the competitive landscape.
+
+Guidelines:
+- Search for recent benchmarks, evaluations, and comparison papers.
+- After finding papers, write a SOTA summary using EXACTLY this format:
+
+## State of the Art: [topic]
+(brief 1-sentence context)
+
+For each top model/method found, one line: **Name** — key metric(s) — brief note
+Example: **GPT-4o** — MMLU 87.2, HumanEval 90.2 — strong on reasoning and code
+
+List at most 8 entries, strongest first.";
+
+const SYSTEM_READING_LIST: &str = "\
+You are a research discovery agent for an AI/ML paper reader called Trench. \
+Find papers and organise them as a structured learning path.
+
+Guidelines:
+- Find foundational papers first, then intermediate, then advanced.
+- After finding papers, write a numbered reading list using EXACTLY this format:
+
+## Learning Path: [topic]
+
+1. **Title** (Author, Year) — one sentence: why read this first
+2. **Title** (Author, Year) — one sentence: what it builds on
+
+Order from foundations to advanced. Include 5-12 papers.";
+
+const SYSTEM_CODE: &str = "\
+You are a research discovery agent for an AI/ML paper reader called Trench. \
+Find papers with available implementations and summarise the code landscape.
+
+Guidelines:
+- Prioritise search_papers_with_code for implementation coverage.
+- After finding papers, write a code-focused summary using EXACTLY this format:
+
+## Implementations: [topic]
+
+For each paper with code: **Title** — GitHub: [link or 'not found'] — [framework, brief note]
+Group by: Official implementations first, then third-party.";
+
+fn system_for_intent(intent: QueryIntent) -> &'static str {
+  match intent {
+    QueryIntent::FindPapers       => SYSTEM_FIND,
+    QueryIntent::LiteratureReview => SYSTEM_LIT_REVIEW,
+    QueryIntent::SotaLookup       => SYSTEM_SOTA,
+    QueryIntent::ReadingList      => SYSTEM_READING_LIST,
+    QueryIntent::CodeSearch       => SYSTEM_CODE,
+  }
+}
+
 pub fn run(
   topic: &str,
   config: &Config,
   tx: &Sender<DiscoveryMessage>,
   prior_history: Option<Vec<Value>>,
+  intent: QueryIntent,
 ) {
-  if let Err(e) = run_inner(topic, config, tx, prior_history) {
+  if let Err(e) = run_inner(topic, config, tx, prior_history, intent) {
     let _ = tx.send(DiscoveryMessage::Error(e));
   }
 }
@@ -40,6 +113,7 @@ fn run_inner(
   config: &Config,
   tx: &Sender<DiscoveryMessage>,
   prior_history: Option<Vec<Value>>,
+  intent: QueryIntent,
 ) -> Result<(), String> {
   let api_key = config
     .claude_api_key
@@ -70,8 +144,10 @@ fn run_inner(
     "Starting discovery for '{topic}'…"
   )));
 
+  let system = system_for_intent(intent);
+
   for step in 0..MAX_ITERATIONS {
-    let response = call_claude(&client, api_key, SYSTEM, &messages, &tools_json)?;
+    let response = call_claude(&client, api_key, system, &messages, &tools_json)?;
 
     // Collect tool_use blocks before moving content into messages.
     let tool_uses: Vec<Value> = response
@@ -86,7 +162,7 @@ fn run_inner(
 
     if tool_uses.is_empty() {
       // No tools called — agent is done.
-      emit_snapshot(&messages, tx);
+      emit_snapshot(&messages, intent, tx);
       let _ = tx.send(DiscoveryMessage::Complete);
       return Ok(());
     }
@@ -120,17 +196,18 @@ fn run_inner(
     messages.push(json!({ "role": "user", "content": tool_results }));
   }
 
-  emit_snapshot(&messages, tx);
+  emit_snapshot(&messages, intent, tx);
   let _ = tx.send(DiscoveryMessage::Complete);
   Ok(())
 }
 
-fn emit_snapshot(messages: &[Value], tx: &Sender<DiscoveryMessage>) {
+fn emit_snapshot(messages: &[Value], intent: QueryIntent, tx: &Sender<DiscoveryMessage>) {
   let initial_query =
     messages[0]["content"].as_str().unwrap_or("").to_string();
   let mut snapshot = crate::discovery::SessionHistory {
     messages: messages.to_vec(),
     initial_query,
+    query_intent: intent,
   };
   snapshot.truncate_to_limit();
   let _ = tx.send(DiscoveryMessage::SessionSnapshot(snapshot));

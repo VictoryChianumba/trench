@@ -246,6 +246,8 @@ pub struct App {
   pub discovery_session: crate::discovery::SessionHistory,
   /// Set by Ctrl+N — forces a fresh session even when history exists.
   pub discovery_force_new: bool,
+  /// Classified intent of the current/last discovery query.
+  pub discovery_intent: crate::discovery::intent::QueryIntent,
   pub search_query: String,
   pub search_active: bool,
   pub status_message: Option<String>,
@@ -424,6 +426,7 @@ impl App {
       discovery_loading: false,
       discovery_session: crate::store::session::load(),
       discovery_force_new: false,
+      discovery_intent: crate::discovery::intent::QueryIntent::default(),
       search_query: String::new(),
       search_active: false,
       status_message: None,

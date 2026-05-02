@@ -490,16 +490,23 @@ pub(crate) fn spawn_ai_discovery(
 
   app.discovery_force_new = false;
 
+  let intent = if is_refinement {
+    app.discovery_session.query_intent
+  } else {
+    discovery::intent::classify(&topic)
+  };
+  app.discovery_intent = intent;
+
   let (tx, rx) = mpsc::channel::<discovery::DiscoveryMessage>();
   app.discovery_rx = Some(rx);
   app.discovery_loading = true;
   app.discovery_status = if is_refinement {
-    format!("Refining: '{topic}'…")
+    format!("Refining [{}]: '{topic}'…", intent.label())
   } else {
-    String::new()
+    format!("Searching [{}]…", intent.label())
   };
 
-  discovery::pipeline::spawn_discovery(topic, config, tx, prior_history);
+  discovery::pipeline::spawn_discovery(topic, config, tx, prior_history, intent);
 }
 
 /// Like do_refresh, but always runs — reloads config from disk, abandons any

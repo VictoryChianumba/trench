@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::discovery::{DiscoveryMessage, agent, ai_query};
+use crate::discovery::intent::QueryIntent;
 
 /// Spawn a discovery thread. Uses the ReAct agent when a Claude API key is
 /// available; falls back to the single-shot arXiv plan otherwise.
@@ -12,10 +13,11 @@ pub fn spawn_discovery(
   config: Config,
   tx: mpsc::Sender<DiscoveryMessage>,
   prior_history: Option<Vec<Value>>,
+  intent: QueryIntent,
 ) {
   std::thread::spawn(move || {
     if config.claude_api_key.as_deref().map(|k| !k.trim().is_empty()).unwrap_or(false) {
-      agent::run(&topic, &config, &tx, prior_history);
+      agent::run(&topic, &config, &tx, prior_history, intent);
     } else {
       run_fallback(&topic, &config, &tx);
     }

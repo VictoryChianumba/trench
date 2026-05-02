@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod ai_query;
+pub mod intent;
 pub mod pipeline;
 pub mod tools;
 
@@ -15,6 +16,9 @@ pub struct SessionHistory {
   pub messages: Vec<serde_json::Value>,
   /// First query that opened this session — used in the UI badge and chat summary.
   pub initial_query: String,
+  /// Intent classified from the initial query — preserved across refinements.
+  #[serde(default)]
+  pub query_intent: intent::QueryIntent,
 }
 
 impl SessionHistory {

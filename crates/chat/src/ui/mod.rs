@@ -1169,11 +1169,69 @@ impl ChatUi {
             display_content
           };
 
-          // No indentation — wrap at full width.
           for source_line in content.lines() {
             if source_line.trim().is_empty() {
               lines.push(Line::from(""));
+            } else if let Some(rest) = source_line.strip_prefix("## ") {
+              // H2 — accent color + bold, no indent
+              let h_style = Style::default()
+                .fg(t.accent)
+                .add_modifier(Modifier::BOLD);
+              for wrapped in textwrap::wrap(rest, wrap_width) {
+                lines.push(parse_markdown_inline(&wrapped, h_style));
+              }
+            } else if let Some(rest) = source_line.strip_prefix("### ") {
+              // H3 — bold, no indent
+              let h_style = base_style.add_modifier(Modifier::BOLD);
+              for wrapped in textwrap::wrap(rest, wrap_width) {
+                lines.push(parse_markdown_inline(&wrapped, h_style));
+              }
+            } else if let Some(rest) = source_line
+              .strip_prefix("- ")
+              .or_else(|| source_line.strip_prefix("* "))
+            {
+              // Bullet — indented with • marker
+              let bullet_width = wrap_width.saturating_sub(4).max(1);
+              let marker_style = Style::default().fg(t.text_dim);
+              let mut first = true;
+              for wrapped in textwrap::wrap(rest, bullet_width) {
+                if first {
+                  let mut spans = vec![
+                    Span::styled("  • ".to_string(), marker_style),
+                  ];
+                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+                  lines.push(Line::from(spans));
+                  first = false;
+                } else {
+                  let mut spans =
+                    vec![Span::styled("    ".to_string(), base_style)];
+                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+                  lines.push(Line::from(spans));
+                }
+              }
+            } else if let Some((num, rest)) = parse_numbered_item(source_line) {
+              // Numbered list item
+              let indent_width = wrap_width.saturating_sub(4).max(1);
+              let num_style = Style::default().fg(t.text_dim);
+              let prefix = format!("{num}. ");
+              let pad = "    ";
+              let mut first = true;
+              for wrapped in textwrap::wrap(rest, indent_width) {
+                if first {
+                  let mut spans =
+                    vec![Span::styled(format!("  {prefix}"), num_style)];
+                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+                  lines.push(Line::from(spans));
+                  first = false;
+                } else {
+                  let mut spans =
+                    vec![Span::styled(pad.to_string(), base_style)];
+                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+                  lines.push(Line::from(spans));
+                }
+              }
             } else {
+              // Plain prose — wrap at full width
               for wrapped in textwrap::wrap(source_line, wrap_width) {
                 lines.push(parse_markdown_inline(&wrapped, base_style));
               }
@@ -1202,6 +1260,13 @@ impl ChatUi {
     };
     let _ = save_index(&index);
   }
+}
+
+/// Detect `N. rest` numbered list items. Returns `(num, rest)` or `None`.
+fn parse_numbered_item(line: &str) -> Option<(u32, &str)> {
+  let dot = line.find(". ")?;
+  let num: u32 = line[..dot].trim().parse().ok()?;
+  Some((num, &line[dot + 2..]))
 }
 
 /// Parse inline markdown (`**bold**`, `*italic*`) into styled spans.
