@@ -7,3 +7,5 @@ hygg-server/data/hygg.db
 test-upload.txt
 .env
 cargo
+.DS_Store
+notes.txt
