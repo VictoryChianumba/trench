@@ -21,7 +21,7 @@ impl SortCriteria {
   fn compare(&self, note1: &Note, note2: &Note, order: &SortOrder) -> Ordering {
     let ascending_ord = match self {
       SortCriteria::Date => note1.created_at.cmp(&note2.created_at),
-      SortCriteria::Title => note1.article_title.cmp(&note2.article_title),
+      SortCriteria::Title => note1.title.cmp(&note2.title),
     };
 
     match order {
@@ -102,29 +102,29 @@ mod test {
   fn get_default_notes() -> Vec<Note> {
     vec![
       Note {
-        article_id: "0".into(),
-        article_title: "Title 2".into(),
-        article_url: "https://example.com/0".into(),
+        note_id: "0".into(),
+        title: "Title 2".into(),
         content: "Content 2".into(),
         tags: vec![],
+        linked_papers: vec![],
         created_at: Utc.with_ymd_and_hms(2023, 12, 2, 1, 2, 3).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2023, 12, 2, 1, 2, 3).unwrap(),
       },
       Note {
-        article_id: "1".into(),
-        article_title: "Title 1".into(),
-        article_url: "https://example.com/1".into(),
+        note_id: "1".into(),
+        title: "Title 1".into(),
         content: "Content 1".into(),
         tags: vec!["Tag 1".into(), "Tag 2".into()],
+        linked_papers: vec![],
         created_at: Utc.with_ymd_and_hms(2023, 10, 12, 11, 22, 33).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2023, 10, 12, 11, 22, 33).unwrap(),
       },
       Note {
-        article_id: "2".into(),
-        article_title: "Title 2".into(), // intentionally same as note 0
-        article_url: "https://example.com/2".into(),
+        note_id: "2".into(),
+        title: "Title 2".into(), // intentionally same as note 0
         content: "Content 3".into(),
         tags: vec![],
+        linked_papers: vec![],
         created_at: Utc.with_ymd_and_hms(2024, 1, 2, 1, 2, 3).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2024, 1, 2, 1, 2, 3).unwrap(),
       },
@@ -132,7 +132,7 @@ mod test {
   }
 
   fn get_ids(notes: &[Note]) -> Vec<&str> {
-    notes.iter().map(|n| n.article_id.as_str()).collect()
+    notes.iter().map(|n| n.note_id.as_str()).collect()
   }
 
   #[test]
@@ -178,11 +178,11 @@ mod test {
     let mut notes = get_default_notes();
     // Note "3": same title as notes 0 and 2, but date between them
     notes.push(Note {
-      article_id: "3".into(),
-      article_title: "Title 2".into(),
-      article_url: "https://example.com/3".into(),
+      note_id: "3".into(),
+      title: "Title 2".into(),
       content: "Content 4".into(),
       tags: vec![],
+      linked_papers: vec![],
       created_at: Utc.with_ymd_and_hms(2023, 11, 15, 1, 2, 3).unwrap(),
       updated_at: Utc.with_ymd_and_hms(2023, 11, 15, 1, 2, 3).unwrap(),
     });

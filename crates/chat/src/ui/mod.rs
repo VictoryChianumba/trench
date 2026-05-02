@@ -350,9 +350,7 @@ impl ChatUi {
           ))
           .title_alignment(Alignment::Center),
       )
-      .highlight_style(
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-      )
+      .highlight_style(t.style_selection_text())
       .highlight_symbol("  ");
 
     frame.render_stateful_widget(

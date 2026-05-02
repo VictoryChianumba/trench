@@ -9,8 +9,8 @@ fn notes_dir() -> PathBuf {
     .join("notes")
 }
 
-fn note_path(article_id: &str) -> PathBuf {
-  notes_dir().join(format!("{article_id}.json"))
+fn note_path(note_id: &str) -> PathBuf {
+  notes_dir().join(format!("{note_id}.json"))
 }
 
 pub fn load_all_notes() -> anyhow::Result<Vec<Note>> {
@@ -35,8 +35,8 @@ pub fn load_all_notes() -> anyhow::Result<Vec<Note>> {
   Ok(notes)
 }
 
-pub fn load_note(article_id: &str) -> Option<Note> {
-  let path = note_path(article_id);
+pub fn load_note(note_id: &str) -> Option<Note> {
+  let path = note_path(note_id);
   let bytes = std::fs::read(&path).ok()?;
   serde_json::from_slice(&bytes).ok()
 }
@@ -45,12 +45,12 @@ pub fn save_note(note: &Note) -> anyhow::Result<()> {
   let dir = notes_dir();
   std::fs::create_dir_all(&dir)?;
   let bytes = serde_json::to_vec_pretty(note)?;
-  std::fs::write(note_path(&note.article_id), bytes)?;
+  std::fs::write(note_path(&note.note_id), bytes)?;
   Ok(())
 }
 
-pub fn delete_note(article_id: &str) -> anyhow::Result<()> {
-  let path = note_path(article_id);
+pub fn delete_note(note_id: &str) -> anyhow::Result<()> {
+  let path = note_path(note_id);
   if path.exists() {
     std::fs::remove_file(&path)?;
   }

@@ -16,6 +16,7 @@ pub fn dispatch_slash_command(app: &mut App, cmd: SlashCommandInvocation) {
     }
     SlashCommandInvocation::ClearDiscoveries => {
       app.discovery_items.clear();
+      app.invalidate_visible_cache();
       app.discovery_selected_index = 0;
       app.discovery_list_offset = 0;
       app.discovery_plan = None;

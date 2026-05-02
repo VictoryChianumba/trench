@@ -170,6 +170,14 @@ pub struct ReaderTab {
   pub editor: cli_text_reader::Editor,
 }
 
+/// One note document open in the notes pane.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct NotesTab {
+  #[serde(alias = "article_id")]
+  pub note_id: String,
+  pub title: String,
+}
+
 /// Tracks a pane's current screen position and open state.
 #[derive(Clone)]
 pub struct PaneInfo {
@@ -181,6 +189,10 @@ pub struct PaneInfo {
 impl PaneInfo {
   fn new(id: PaneId) -> Self {
     Self { id, rect: Rect::default(), is_open: false }
+  }
+
+  fn is_focusable(&self) -> bool {
+    !matches!(self.id, PaneId::Details)
   }
 }
 
@@ -296,6 +308,8 @@ pub struct App {
   // Embedded notes pane
   pub notes_app: Option<notes::app::App>,
   pub notes_active: bool,
+  pub notes_tabs: Vec<NotesTab>,
+  pub notes_active_tab: usize,
 
   // Embedded chat pane
   pub chat_ui: Option<chat::ChatUi>,
@@ -450,6 +464,8 @@ impl App {
       sources_detect_rx: None,
       notes_app: None,
       notes_active: false,
+      notes_tabs: Vec::new(),
+      notes_active_tab: 0,
       chat_ui: None,
       chat_active: false,
       chat_fullscreen: false,
@@ -563,6 +579,7 @@ impl App {
       .filter(|p| {
         p.id != self.focused_pane
           && p.is_open
+          && p.is_focusable()
           && p.rect.width > 0
           && p.rect.height > 0
       })
@@ -602,12 +619,35 @@ impl App {
       .map(|p| p.id)
   }
 
+  /// Returns the focusable open pane whose rect contains the given terminal
+  /// cell. Passive panes like Details remain hit-testable via `pane_at` but do
+  /// not receive focus.
+  pub fn focusable_pane_at(&self, col: u16, row: u16) -> Option<PaneId> {
+    self
+      .panes
+      .iter()
+      .filter(|p| {
+        p.is_open && p.is_focusable() && p.rect.width > 0 && p.rect.height > 0
+      })
+      .find(|p| {
+        col >= p.rect.x
+          && col < p.rect.x + p.rect.width
+          && row >= p.rect.y
+          && row < p.rect.y + p.rect.height
+      })
+      .map(|p| p.id)
+  }
+
   /// Returns secondary open panes sorted top-to-bottom then left-to-right.
   pub fn secondary_panes_sorted(&self) -> Vec<PaneId> {
     let primary =
       if self.reader_active { PaneId::Reader } else { PaneId::Feed };
     let mut secondaries: Vec<&PaneInfo> =
-      self.panes.iter().filter(|p| p.id != primary && p.is_open).collect();
+      self
+        .panes
+        .iter()
+        .filter(|p| p.id != primary && p.is_open && p.is_focusable())
+        .collect();
     secondaries.sort_by_key(|p| (p.rect.y, p.rect.x));
     secondaries.iter().map(|p| p.id).collect()
   }
@@ -754,11 +794,6 @@ impl App {
     self.clear_notification();
   }
 
-  pub fn details_scroll_down(&mut self) {
-    self.details_scroll =
-      self.details_scroll.saturating_add(1).min(self.details_max_scroll);
-  }
-
   /// Called by the renderer each frame with the computed max scroll for the
   /// details pane. Keeps `details_scroll` bounded without the renderer needing
   /// to mutate scroll state itself.
@@ -767,10 +802,6 @@ impl App {
     if self.details_scroll > max {
       self.details_scroll = max;
     }
-  }
-
-  pub fn details_scroll_up(&mut self) {
-    self.details_scroll = self.details_scroll.saturating_sub(1);
   }
 
   pub fn push_search_char(&mut self, c: char) {

@@ -411,6 +411,7 @@ pub(crate) fn spawn_ai_discovery(
   app.discovery_plan_selected.clear();
   app.discovery_plan_cursor = 0;
   app.discovery_items.clear();
+  app.invalidate_visible_cache();
   discovery::pipeline::spawn_discovery(topic, config, tx);
 }
 
@@ -475,7 +476,7 @@ fn handle_mouse(
     MouseEventKind::ScrollDown => {
       if mouse_scroll_ok(app) {
         match hovered {
-          Some(PaneId::Details) => app.details_scroll_down(),
+          Some(PaneId::Details) => {}
           Some(PaneId::Notes) => {
             if let Some(notes_app) = app.notes_app.as_mut() {
               notes_app.select_next_note();
@@ -499,7 +500,7 @@ fn handle_mouse(
     MouseEventKind::ScrollUp => {
       if mouse_scroll_ok(app) {
         match hovered {
-          Some(PaneId::Details) => app.details_scroll_up(),
+          Some(PaneId::Details) => {}
           Some(PaneId::Notes) => {
             if let Some(notes_app) = app.notes_app.as_mut() {
               notes_app.select_prev_note();
@@ -539,10 +540,10 @@ fn handle_mouse(
         return;
       }
 
-      // Click any open pane → focus it.
-      if let Some(pane) = hovered {
+      // Click any focusable open pane → focus it.
+      if let Some(pane) = app.focusable_pane_at(mouse.column, mouse.row) {
         app.focused_pane = pane;
-        if matches!(pane, PaneId::Details | PaneId::Feed) {
+        if matches!(pane, PaneId::Feed) {
           app.filter_focus = false;
         }
       }
@@ -683,7 +684,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let log_file = dirs::home_dir().and_then(|home| {
     let path = home.join(".config/trench/trench.log");
     std::fs::create_dir_all(path.parent()?).ok()?;
-    std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()
+    // Truncate on each startup — prevents unbounded growth from filling disk.
+    std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path).ok()
   });
   match log_file {
     Some(f) => {
@@ -696,6 +698,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       env_logger::Builder::new().filter_level(log::LevelFilter::Off).init();
     }
   }
+
+  // Install a panic hook that restores the terminal before printing the
+  // backtrace.  Without this, a panic (including in a spawned thread whose
+  // panic aborts via double-panic) leaves the terminal in raw/alt-screen mode
+  // and the user sees a completely garbled display rather than a clear error.
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    // Best-effort terminal restore — ignore errors.
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+      io::stderr(),
+      crossterm::terminal::LeaveAlternateScreen,
+      crossterm::event::DisableMouseCapture,
+    );
+    default_hook(info);
+  }));
+
   enable_raw_mode()?;
   let mut stdout = io::stdout();
   execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -715,6 +734,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let ui = store::load_ui();
   app.last_read        = ui.last_read;
   app.last_read_source = ui.last_read_source;
+  app.notes_tabs       = ui.notes_tabs;
+  // Clamp in case ui.json was written with a tab count that has since shrunk.
+  app.notes_active_tab =
+    ui.notes_active_tab.min(app.notes_tabs.len().saturating_sub(1));
 
   // 1. Load cache immediately → populate app.items.
   let cached = store::cache::load();
@@ -989,6 +1012,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   store::save_ui(&store::UiState {
     last_read:        app.last_read.clone(),
     last_read_source: app.last_read_source.clone(),
+    notes_tabs:       app.notes_tabs.clone(),
+    notes_active_tab: app.notes_active_tab,
   });
 
   disable_raw_mode()?;

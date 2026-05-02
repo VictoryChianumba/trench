@@ -48,7 +48,7 @@ impl Display for Input {
       }
       KeyCode::Null => "Null",
       KeyCode::Esc => "Esc",
-      _ => panic!("{:?} is not implemented", self.key_code),
+      _ => "<?>",
     };
 
     if self.modifiers.is_empty() {

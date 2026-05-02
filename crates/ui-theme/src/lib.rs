@@ -866,4 +866,21 @@ mod tests {
       assert_ne!(t.bg_selection, t.bg, "{id:?} selection/bg");
     }
   }
+
+  #[test]
+  fn every_theme_selection_helpers_keep_text_visible() {
+    for id in ThemeId::all() {
+      let t = id.theme();
+      assert_ne!(
+        t.style_selection_text().fg,
+        Some(t.bg_selection),
+        "{id:?} selection text/bg"
+      );
+      assert_ne!(
+        t.style_selection_dim().fg,
+        Some(t.bg_selection),
+        "{id:?} selection dim/bg"
+      );
+    }
+  }
 }

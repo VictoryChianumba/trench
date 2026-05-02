@@ -12,7 +12,7 @@ use ratatui::{
 use rayon::prelude::*;
 
 use crate::{
-  Note,
+  Note, PaperRef,
   colored_tags::{ColoredTagsManager, TagColors},
   editor::{ClipboardOperation, EditorMode, NoteEditor, NoteEditorAction},
   entries_list::EntriesList,
@@ -97,9 +97,9 @@ impl ActivePopup {
 pub struct App {
   /// All notes, sorted according to the current sorter.
   pub notes: Vec<Note>,
-  /// `article_id` of the note highlighted in the list, if any.
+  /// `note_id` of the note highlighted in the list, if any.
   pub current_note_id: Option<String>,
-  /// `article_id`s of notes that have been filtered out by the active filter.
+  /// `note_id`s of notes that have been filtered out by the active filter.
   pub filtered_out_notes: HashSet<String>,
   /// Active filter, if any.
   pub filter: Option<Filter>,
@@ -126,6 +126,10 @@ pub struct App {
   initial_focus_id: Option<String>,
   initial_focus_title: String,
   initial_focus_url: String,
+  /// Paper context held from `focus_article` until the CreateNote popup confirms.
+  pending_paper: Option<PaperRef>,
+  /// Set after note creation so trench can add the new tab.
+  pub last_created_note_id: Option<String>,
 }
 
 impl App {
@@ -149,9 +153,43 @@ impl App {
       initial_focus_id: None,
       initial_focus_title: String::new(),
       initial_focus_url: String::new(),
+      pending_paper: None,
+      last_created_note_id: None,
     };
     s.entries_list.set_active(true);
     s
+  }
+
+  /// The note ID currently visible (note selected or pending initial focus).
+  pub fn focused_note_id(&self) -> Option<&str> {
+    self.current_note_id.as_deref().or(self.initial_focus_id.as_deref())
+  }
+
+  /// Returns note_ids whose linked_papers contains this paper_id.
+  pub fn find_notes_for_paper(&self, paper_id: &str) -> Vec<String> {
+    self.notes
+      .iter()
+      .filter(|n| n.linked_papers.iter().any(|p| p.id == paper_id))
+      .map(|n| n.note_id.clone())
+      .collect()
+  }
+
+  /// Focus a specific note by note_id (used by tab switching).
+  pub fn focus_note(&mut self, note_id: &str) {
+    let pos = self.get_active_notes().position(|n| n.note_id == note_id);
+    if let Some(pos) = pos {
+      self.entries_list.state.select(Some(pos));
+      self.sync_current_note_id();
+      let note = self.get_active_notes().nth(pos).cloned();
+      self.editor.load_note(note.as_ref());
+      self.notes_state = NotesState::Preview;
+      self.preview_scroll = 0;
+    }
+  }
+
+  /// Get a note's title by note_id (used by trench to build tab label).
+  pub fn get_note_title(&self, note_id: &str) -> Option<String> {
+    self.notes.iter().find(|n| n.note_id == note_id).map(|n| n.title.clone())
   }
 
   /// Store article info so the runner can focus the right note after loading.
@@ -159,11 +197,20 @@ impl App {
     self.initial_focus_id = Some(id.to_string());
     self.initial_focus_title = title.to_string();
     self.initial_focus_url = url.to_string();
+    self.pending_paper = Some(PaperRef {
+      id: id.to_string(),
+      title: title.to_string(),
+      url: url.to_string(),
+    });
   }
 
   /// Called by the runner after `load_notes` to position the list and editor.
   pub fn apply_initial_focus(&mut self) {
-    let Some(id) = self.initial_focus_id.clone() else {
+    self.notes_state = NotesState::List;
+    self.entries_list.multi_select_mode = false;
+    self.entries_list.selected_notes.clear();
+
+    let Some(id) = self.initial_focus_id.take() else {
       // No focus requested — select the first note if any.
       if !self.notes.is_empty() {
         self.entries_list.state.select(Some(0));
@@ -174,27 +221,20 @@ impl App {
       return;
     };
 
-    let pos = self.get_active_notes().position(|n| n.article_id == id);
+    let pos = self
+      .get_active_notes()
+      .position(|n| n.linked_papers.iter().any(|p| p.id == id));
     if let Some(pos) = pos {
       self.entries_list.state.select(Some(pos));
       self.sync_current_note_id();
       let note = self.get_active_notes().nth(pos).cloned();
       self.editor.load_note(note.as_ref());
     } else {
-      // Note doesn't exist yet — open create popup pre-filled with article info.
+      // Note doesn't exist yet — open create popup pre-filled with article title.
       let title = std::mem::take(&mut self.initial_focus_title);
-      let url = std::mem::take(&mut self.initial_focus_url);
-      let stub = Note {
-        article_id: id.to_string(),
-        article_title: title,
-        article_url: url,
-        content: String::new(),
-        tags: Vec::new(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-      };
+      self.initial_focus_url = String::new();
       self.active_popup =
-        ActivePopup::CreateNote(Box::new(NotePopup::from_note(&stub)));
+        ActivePopup::CreateNote(Box::new(NotePopup::with_prefill(&title)));
     }
   }
 
@@ -226,7 +266,13 @@ impl App {
       }
       NoteEditorAction::Quit => {
         if self.editor.has_unsaved() {
-          self.show_unsaved_msg_box(UICommand::DiscardChangesNoteContent);
+          self.show_msg_box(
+            MsgBoxType::Question(
+              "Save changes before going back to list?\n(No = discard, Cancel = keep editing)".into(),
+            ),
+            MsgBoxActions::YesNoCancel,
+            UICommand::DiscardChangesNoteContent,
+          );
         } else {
           self.go_to_list();
         }
@@ -460,11 +506,8 @@ impl App {
         }
         NotePopupReturn::Cancel => {}
         NotePopupReturn::AddNote(data) => {
-          match self.create_note(
-            data.article_title,
-            data.article_url,
-            data.tags,
-          ) {
+          let paper = self.pending_paper.take();
+          match self.create_note(data.title, data.tags, paper) {
             Ok(id) => {
               self.set_current_note(Some(id));
             }
@@ -485,9 +528,13 @@ impl App {
           }
           NotePopupReturn::Cancel => {}
           NotePopupReturn::UpdateNote(data) => {
+            let linked = self
+              .get_current_note()
+              .map(|n| n.linked_papers.clone())
+              .unwrap_or_default();
             if let Err(e) = self.update_current_note_attributes(
-              data.article_title,
-              data.article_url,
+              data.title,
+              linked,
               data.tags,
             ) {
               self.show_err_msg(format!("Failed to update note: {e}"));
@@ -524,6 +571,9 @@ impl App {
       },
 
       ActivePopup::FuzzyFind(mut p) => match p.handle_input(key) {
+        FuzzFindReturn::KeepPopup => {
+          self.active_popup = ActivePopup::FuzzyFind(p);
+        }
         FuzzFindReturn::Close => {}
         FuzzFindReturn::SelectEntry(id) => {
           if let Some(id) = id {
@@ -677,7 +727,7 @@ impl App {
 
       UICommand::MulSelSelectAll => {
         self.entries_list.selected_notes =
-          self.get_active_notes().map(|n| n.article_id.clone()).collect();
+          self.get_active_notes().map(|n| n.note_id.clone()).collect();
         HandleInputReturn::Handled
       }
 
@@ -688,7 +738,7 @@ impl App {
 
       UICommand::MulSelInverSelection => {
         let all: HashSet<String> =
-          self.get_active_notes().map(|n| n.article_id.clone()).collect();
+          self.get_active_notes().map(|n| n.note_id.clone()).collect();
         let current = std::mem::take(&mut self.entries_list.selected_notes);
         self.entries_list.selected_notes =
           all.difference(&current).cloned().collect();
@@ -886,9 +936,9 @@ impl App {
   pub fn set_current_note(&mut self, id: Option<String>) {
     self.current_note_id = id.clone();
     if let Some(ref id) = id {
-      let pos = self.get_active_notes().position(|n| n.article_id == *id);
+      let pos = self.get_active_notes().position(|n| n.note_id == *id);
       self.entries_list.state.select(pos);
-      let note = self.notes.iter().find(|n| n.article_id == *id).cloned();
+      let note = self.notes.iter().find(|n| n.note_id == *id).cloned();
       self.editor.load_note(note.as_ref());
     } else {
       self.entries_list.state.select(None);
@@ -1082,18 +1132,18 @@ impl App {
     self
       .notes
       .iter()
-      .filter(|n| !self.filtered_out_notes.contains(&n.article_id))
+      .filter(|n| !self.filtered_out_notes.contains(&n.note_id))
   }
 
   pub fn get_note(&self, id: &str) -> Option<&Note> {
-    self.get_active_notes().find(|n| n.article_id == id)
+    self.get_active_notes().find(|n| n.note_id == id)
   }
 
   pub fn get_current_note(&self) -> Option<&Note> {
     self
       .current_note_id
       .as_deref()
-      .and_then(|id| self.get_active_notes().find(|n| n.article_id == id))
+      .and_then(|id| self.get_active_notes().find(|n| n.note_id == id))
   }
 
   /// Returns every unique tag that appears in any note.
@@ -1181,7 +1231,7 @@ impl App {
       .state
       .selected()
       .and_then(|i| self.get_active_notes().nth(i))
-      .map(|n| n.article_id.clone());
+      .map(|n| n.note_id.clone());
   }
 
   /// After the active-notes slice changes (sort/filter), re-select the same
@@ -1196,7 +1246,7 @@ impl App {
 
     // Try to keep the same note selected by id.
     if let Some(id) = self.current_note_id.clone() {
-      let pos = self.get_active_notes().position(|n| n.article_id == id);
+      let pos = self.get_active_notes().position(|n| n.note_id == id);
       if let Some(pos) = pos {
         self.entries_list.state.select(Some(pos));
         return;
@@ -1216,20 +1266,22 @@ impl App {
   pub fn create_note(
     &mut self,
     title: String,
-    url: String,
     tags: Vec<String>,
+    paper: Option<PaperRef>,
   ) -> anyhow::Result<String> {
     let now = Utc::now();
     let note = Note {
-      article_id: new_id(),
-      article_title: title,
-      article_url: url,
+      note_id: new_id(),
+      title,
       content: String::new(),
       tags,
+      linked_papers: paper.into_iter().collect(),
       created_at: now,
       updated_at: now,
     };
-    self.insert_note_intern(note, HistoryStack::Undo)
+    let id = self.insert_note_intern(note, HistoryStack::Undo)?;
+    self.last_created_note_id = Some(id.clone());
+    Ok(id)
   }
 
   /// Insert a fully-constructed note (used by undo/redo to restore deleted notes).
@@ -1239,7 +1291,7 @@ impl App {
     history_target: HistoryStack,
   ) -> anyhow::Result<String> {
     storage::save_note(&note)?;
-    let id = note.article_id.clone();
+    let id = note.note_id.clone();
     self.history.register_add(history_target, &note);
     self.notes.push(note);
     self.sort_notes();
@@ -1248,25 +1300,25 @@ impl App {
     Ok(id)
   }
 
-  /// Update the title, url, and tags of the currently selected note.
+  /// Update the title, linked_papers, and tags of the currently selected note.
   pub fn update_current_note_attributes(
     &mut self,
     title: String,
-    url: String,
+    linked_papers: Vec<PaperRef>,
     tags: Vec<String>,
   ) -> anyhow::Result<()> {
-    let id = self
-      .current_note_id
-      .clone()
-      .expect("current_note_id must be set when updating note attributes");
-    self.update_note_attributes(&id, title, url, tags, HistoryStack::Undo)
+    let Some(id) = self.current_note_id.clone() else {
+      log::warn!("update_current_note_attributes called with no selected note");
+      return Ok(());
+    };
+    self.update_note_attributes(&id, title, linked_papers, tags, HistoryStack::Undo)
   }
 
   fn update_note_attributes(
     &mut self,
     id: &str,
     title: String,
-    url: String,
+    linked_papers: Vec<PaperRef>,
     tags: Vec<String>,
     history_target: HistoryStack,
   ) -> anyhow::Result<()> {
@@ -1275,13 +1327,13 @@ impl App {
     let note = self
       .notes
       .iter_mut()
-      .find(|n| n.article_id == id)
+      .find(|n| n.note_id == id)
       .expect("note must exist when updating attributes");
 
     self.history.register_change_attributes(history_target, note);
 
-    note.article_title = title;
-    note.article_url = url;
+    note.title = title;
+    note.linked_papers = linked_papers;
     note.tags = tags;
     note.updated_at = Utc::now();
 
@@ -1298,10 +1350,10 @@ impl App {
 
   /// Save the editor's current content back to the currently selected note.
   pub fn save_current_note_content(&mut self) -> anyhow::Result<()> {
-    let id = self
-      .current_note_id
-      .clone()
-      .expect("current_note_id must be set when saving content");
+    let Some(id) = self.current_note_id.clone() else {
+      log::warn!("save_current_note_content called with no selected note");
+      return Ok(());
+    };
     let content = self.editor.get_content();
     self.update_note_content(&id, content, HistoryStack::Undo)
   }
@@ -1317,7 +1369,7 @@ impl App {
     let note = self
       .notes
       .iter_mut()
-      .find(|n| n.article_id == id)
+      .find(|n| n.note_id == id)
       .expect("note must exist when updating content");
 
     self.history.register_change_content(history_target, note);
@@ -1334,10 +1386,10 @@ impl App {
   }
 
   pub fn delete_current_note(&mut self) -> anyhow::Result<()> {
-    let id = self
-      .current_note_id
-      .clone()
-      .expect("current_note_id must be set when deleting a note");
+    let Some(id) = self.current_note_id.clone() else {
+      log::warn!("delete_current_note called with no selected note");
+      return Ok(());
+    };
     self.delete_note_intern(&id, HistoryStack::Undo)
   }
 
@@ -1353,7 +1405,7 @@ impl App {
     let removed = self
       .notes
       .iter()
-      .position(|n| n.article_id == id)
+      .position(|n| n.note_id == id)
       .map(|pos| self.notes.remove(pos))
       .expect("note must be in the list when deleting");
 
@@ -1384,7 +1436,7 @@ impl App {
         FilterCriterion::Tag(TagFilterOption::Tag(tag)) => {
           all_tags.contains(tag)
         }
-        FilterCriterion::Tag(TagFilterOption::NoTags) => !all_tags.is_empty(),
+        FilterCriterion::Tag(TagFilterOption::NoTags) => true,
         FilterCriterion::Title(_) | FilterCriterion::Content(_) => true,
       });
       if filter.criteria.is_empty() {
@@ -1399,7 +1451,7 @@ impl App {
         .notes
         .par_iter()
         .filter(|n| !filter.check_note(n))
-        .map(|n| n.article_id.clone())
+        .map(|n| n.note_id.clone())
         .collect();
     } else {
       self.filtered_out_notes.clear();
@@ -1524,23 +1576,16 @@ impl App {
         Ok(None)
       }
       Change::RemoveNote(note) => {
-        log::trace!("History Apply: restore note id={}", note.article_id);
+        log::trace!("History Apply: restore note id={}", note.note_id);
         let id = self.insert_note_intern(*note, history_target)?;
         Ok(Some(id))
       }
       Change::NoteAttribute(attr) => {
         log::trace!("History Apply: restore attributes for id={}", attr.id);
-        // NoteAttributes doesn't snapshot article_url; preserve the current one.
-        let current_url = self
-          .notes
-          .iter()
-          .find(|n| n.article_id == attr.id)
-          .map(|n| n.article_url.clone())
-          .unwrap_or_default();
         self.update_note_attributes(
           &attr.id,
-          attr.article_title,
-          current_url,
+          attr.title,
+          attr.linked_papers,
           attr.tags,
           history_target,
         )?;
@@ -1589,7 +1634,7 @@ impl App {
   pub fn open_fuzz_find_popup(&mut self) {
     let notes_map = self
       .get_active_notes()
-      .map(|n| (n.article_id.clone(), n.article_title.clone()))
+      .map(|n| (n.note_id.clone(), n.title.clone()))
       .collect();
     self.active_popup =
       ActivePopup::FuzzyFind(Box::new(FuzzFindPopup::new(notes_map)));

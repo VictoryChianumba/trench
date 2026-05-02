@@ -65,7 +65,7 @@ impl<'a> NoteEditor<'a> {
   /// Equivalent to `set_current_entry` in tui-journal.
   pub fn load_note(&mut self, note: Option<&Note>) {
     let (title, content) = match note {
-      Some(n) => (n.article_title.clone(), n.content.clone()),
+      Some(n) => (n.title.clone(), n.content.clone()),
       None => (String::new(), String::new()),
     };
 

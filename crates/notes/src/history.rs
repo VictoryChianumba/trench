@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 
-use crate::Note;
+use crate::{Note, PaperRef};
 
 #[derive(Debug)]
 /// Keeps history of the changes on notes, enabling undo & redo operations
@@ -39,7 +39,7 @@ impl HistoryManager {
   /// Register Add Change on the corresponding stack of the [`HistoryStack`]
   pub fn register_add(&mut self, target: HistoryStack, note: &Note) {
     log::trace!("History Register Add: Note: {note:?}");
-    let change = Change::AddNote { id: note.article_id.clone() };
+    let change = Change::AddNote { id: note.note_id.clone() };
     self.add_to_stack(change, target);
   }
 
@@ -71,10 +71,10 @@ impl HistoryManager {
   ) {
     log::trace!(
       "History Register Change content: Note ID: {}",
-      note_before_change.article_id
+      note_before_change.note_id
     );
     let change = Change::NoteContent {
-      id: note_before_change.article_id.clone(),
+      id: note_before_change.note_id.clone(),
       content: note_before_change.content.to_owned(),
     };
     self.add_to_stack(change, target);
@@ -116,16 +116,18 @@ pub enum Change {
 pub struct NoteAttributes {
   pub id: String,
   pub created_at: DateTime<Utc>,
-  pub article_title: String,
+  pub title: String,
+  pub linked_papers: Vec<PaperRef>,
   pub tags: Vec<String>,
 }
 
 impl From<&Note> for NoteAttributes {
   fn from(note: &Note) -> Self {
     Self {
-      id: note.article_id.clone(),
+      id: note.note_id.clone(),
       created_at: note.created_at,
-      article_title: note.article_title.to_owned(),
+      title: note.title.to_owned(),
+      linked_papers: note.linked_papers.clone(),
       tags: note.tags.to_owned(),
     }
   }
@@ -139,11 +141,11 @@ mod tests {
 
   fn sample_note(id: u32) -> Note {
     Note {
-      article_id: id.to_string(),
-      article_title: format!("Title {id}"),
-      article_url: format!("https://example.com/{id}"),
+      note_id: id.to_string(),
+      title: format!("Title {id}"),
       content: format!("Content {id}"),
       tags: vec![format!("tag-{id}")],
+      linked_papers: vec![],
       created_at: Utc.with_ymd_and_hms(2024, 2, id + 1, 10, 11, 12).unwrap(),
       updated_at: Utc.with_ymd_and_hms(2024, 2, id + 1, 10, 11, 12).unwrap(),
     }
@@ -192,12 +194,12 @@ mod tests {
 
     history.register_change_attributes(HistoryStack::Undo, &note);
 
-    note.article_title = String::from("Changed");
+    note.title = String::from("Changed");
     note.tags.push(String::from("new"));
 
     match history.pop_undo().unwrap() {
       Change::NoteAttribute(attributes) => {
-        assert_eq!(attributes.article_title, "Title 5");
+        assert_eq!(attributes.title, "Title 5");
         assert_eq!(attributes.tags, vec![String::from("tag-5")]);
       }
       change => panic!("unexpected change: {change:?}"),

@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::mpsc;
 
 use crate::app::{
-  App, AppView, DiscoverResult, FeedTab, FocusedReader, NavDirection, PaneId,
-  RepoContext, RepoPane, SourcesDetectState,
+  App, AppView, DiscoverResult, FeedTab, FocusedReader, NavDirection, NotesTab,
+  PaneId, RepoContext, RepoPane, SourcesDetectState,
 };
 use crate::config;
 use crate::models::WorkflowState;
@@ -233,22 +233,53 @@ fn handle_leader_or_ctrl_t(key: KeyEvent, app: &mut App) -> bool {
 }
 
 fn open_notes(app: &mut App) {
-  if let Some(item) = app.selected_item().cloned() {
-    if app.notes_app.is_none() {
-      let mut na = notes::app::App::new();
-      na.load_state();
-      if let Err(e) = na.load_notes() {
-        log::error!("notes: failed to load notes: {e}");
-      }
-      app.notes_app = Some(na);
+  let Some(item) = app.selected_item().cloned() else { return; };
+
+  if app.notes_app.is_none() {
+    let mut na = notes::app::App::new();
+    na.load_state();
+    if let Err(e) = na.load_notes() {
+      log::error!("notes: failed to load notes: {e}");
     }
-    if let Some(na) = app.notes_app.as_mut() {
-      na.focus_article(&item.id, &item.title, &item.url);
-      na.apply_initial_focus();
-    }
-    app.notes_active = true;
-    app.focused_pane = PaneId::Notes;
+    app.notes_app = Some(na);
   }
+
+  // Drop tabs whose note no longer exists (deleted notes, stale ui.json).
+  if let Some(na) = app.notes_app.as_ref() {
+    app.notes_tabs.retain(|t| na.get_note_title(&t.note_id).is_some());
+    app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len().saturating_sub(1));
+  }
+
+  // Phase 1: find linked notes and collect titles (releases borrow before switch).
+  let linked = app.notes_app.as_ref()
+    .map(|na| na.find_notes_for_paper(&item.id))
+    .unwrap_or_default();
+
+  if linked.is_empty() {
+    // No note linked yet — open create popup pre-filled with article title.
+    if let Some(na) = app.notes_app.as_mut() {
+      if na.focused_note_id().is_none() {
+        na.focus_article(&item.id, &item.title, &item.url);
+        na.apply_initial_focus();
+      }
+    }
+  } else {
+    // Add any linked notes as new tabs (dedup), then activate the first one.
+    for note_id in &linked {
+      if !app.notes_tabs.iter().any(|t| &t.note_id == note_id) {
+        let title = app.notes_app.as_ref()
+          .and_then(|na| na.get_note_title(note_id))
+          .unwrap_or_default();
+        app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+      }
+    }
+    if let Some(idx) = app.notes_tabs.iter().position(|t| linked.contains(&t.note_id)) {
+      notes_switch_tab(app, idx);
+    }
+  }
+
+  app.notes_active = true;
+  app.focused_pane = PaneId::Notes;
 }
 
 fn handle_leader(key: KeyEvent, app: &mut App) {
@@ -514,19 +545,26 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         trigger_fulltext_new_tab(app);
       }
     }
-    // Ldr+[ / Ldr+] — cycle tabs in focused reader
+    // Ldr+[ / Ldr+] — cycle tabs in focused pane
     KeyCode::Char('[') => {
-      if app.reader_active {
+      if app.focused_pane == PaneId::Notes && app.notes_active {
+        notes_prev_tab(app);
+      } else if app.reader_active {
         app.reader_prev_tab();
       }
     }
     KeyCode::Char(']') => {
-      if app.reader_active {
+      if app.focused_pane == PaneId::Notes && app.notes_active {
+        notes_next_tab(app);
+      } else if app.reader_active {
         app.reader_next_tab();
       }
     }
     // Ldr+w — close current tab (collapse pane when last tab)
     KeyCode::Char('w') => match app.focused_pane {
+      PaneId::Notes if app.notes_active => {
+        notes_close_active_tab(app);
+      }
       PaneId::SecondaryReader => {
         let pane_empty = app.reader_secondary_close_active_tab();
         if pane_empty {
@@ -556,6 +594,47 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
     },
     _ => {}
   }
+}
+
+fn notes_prev_tab(app: &mut App) {
+  if app.notes_tabs.is_empty() {
+    return;
+  }
+  let new_idx = app.notes_active_tab.saturating_sub(1);
+  notes_switch_tab(app, new_idx);
+}
+
+fn notes_next_tab(app: &mut App) {
+  if app.notes_tabs.is_empty() {
+    return;
+  }
+  let new_idx = (app.notes_active_tab + 1).min(app.notes_tabs.len() - 1);
+  notes_switch_tab(app, new_idx);
+}
+
+fn notes_switch_tab(app: &mut App, idx: usize) {
+  app.notes_active_tab = idx;
+  if let Some(note_id) = app.notes_tabs.get(idx).map(|t| t.note_id.clone()) {
+    if let Some(na) = app.notes_app.as_mut() {
+      na.focus_note(&note_id);
+    }
+  }
+}
+
+fn notes_close_active_tab(app: &mut App) {
+  if app.notes_tabs.is_empty() {
+    return;
+  }
+  // Clamp before remove — stale ui.json can leave active_tab >= len.
+  app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
+  app.notes_tabs.remove(app.notes_active_tab);
+  if app.notes_tabs.is_empty() {
+    app.notes_active = false;
+    app.focused_pane = if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+    return;
+  }
+  app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
+  notes_switch_tab(app, app.notes_active_tab);
 }
 
 /// Spawns a fulltext fetch for the selected item, using flags already set on app.
@@ -620,6 +699,18 @@ fn handle_notes_pane(key: KeyEvent, app: &mut App) -> bool {
       app.notes_active = false;
       app.focused_pane =
         if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+    }
+  }
+  // Pick up a freshly created note and add its tab.
+  if let Some(note_id) = app.notes_app.as_mut().and_then(|na| na.last_created_note_id.take()) {
+    let title = app.notes_app.as_ref()
+      .and_then(|na| na.get_note_title(&note_id))
+      .unwrap_or_default();
+    if !app.notes_tabs.iter().any(|t| t.note_id == note_id) {
+      app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+    }
+    if let Some(idx) = app.notes_tabs.iter().position(|t| t.note_id == note_id) {
+      app.notes_active_tab = idx;
     }
   }
   true
@@ -1238,35 +1329,6 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       }
       _ => {}
     }
-  } else if app.focused_pane == PaneId::Details {
-    match key.code {
-      KeyCode::Char('j') | KeyCode::Down => {
-        if kbd_scroll_ok(app) {
-          app.details_scroll_down();
-        }
-      }
-      KeyCode::Char('k') | KeyCode::Up => {
-        if kbd_scroll_ok(app) {
-          app.details_scroll_up();
-        }
-      }
-      KeyCode::PageDown => {
-        if kbd_scroll_ok(app) {
-          app.details_scroll = app.details_scroll.saturating_add(10);
-        }
-      }
-      KeyCode::PageUp => {
-        if kbd_scroll_ok(app) {
-          app.details_scroll = app.details_scroll.saturating_sub(10);
-        }
-      }
-      KeyCode::Char('g') => app.details_scroll = 0,
-      KeyCode::Char('G') => app.details_scroll = usize::MAX,
-      KeyCode::Char('h') | KeyCode::Left => {
-        app.focused_pane = PaneId::Feed;
-      }
-      _ => {}
-    }
   } else if app.focused_pane == PaneId::Feed {
     // In State 2 the narrow feed holds focus — use a restricted key set so
     // main-feed bindings (Esc → quit, v → repo viewer) don't fire here.
@@ -1354,9 +1416,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
         app.filter_focus = true;
       }
       KeyCode::Esc => app.should_quit = true,
-      KeyCode::Char('l') | KeyCode::Right => {
-        app.focused_pane = PaneId::Details;
-      }
+      KeyCode::Char('l') | KeyCode::Right => {}
       KeyCode::Char('h') | KeyCode::Left => {
         // already on Feed — no-op
       }

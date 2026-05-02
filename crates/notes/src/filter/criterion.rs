@@ -24,11 +24,10 @@ impl FilterCriterion {
       }
       FilterCriterion::Tag(TagFilterOption::NoTags) => note.tags.is_empty(),
       FilterCriterion::Title(search) => {
-        // Use simple smart-case search for title
         if search.chars().any(|c| c.is_uppercase()) {
-          note.article_title.contains(search)
+          note.title.contains(search)
         } else {
-          note.article_title.to_lowercase().contains(search)
+          note.title.to_lowercase().contains(search)
         }
       }
       FilterCriterion::Content(search) => {
@@ -65,11 +64,11 @@ mod tests {
 
   fn sample_note(tags: Vec<&str>) -> Note {
     Note {
-      article_id: "1".into(),
-      article_title: "Rust Search".into(),
-      article_url: "https://example.com/1".into(),
+      note_id: "1".into(),
+      title: "Rust Search".into(),
       content: "Searching CONTENT with Mixed Case".into(),
       tags: tags.into_iter().map(String::from).collect(),
+      linked_papers: vec![],
       created_at: Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap(),
       updated_at: Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap(),
     }
@@ -119,11 +118,11 @@ mod tests {
     assert!(FilterCriterion::Content(String::from("Mixed")).check_note(&note));
     assert!(!FilterCriterion::Content(String::from("mixed")).check_note(
       &Note {
-        article_id: "2".into(),
-        article_title: note.article_title.clone(),
-        article_url: note.article_url.clone(),
+        note_id: "2".into(),
+        title: note.title.clone(),
         content: "UPPERCASE ONLY".into(),
         tags: note.tags.clone(),
+        linked_papers: vec![],
         created_at: note.created_at,
         updated_at: note.updated_at,
       }

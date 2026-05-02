@@ -23,7 +23,7 @@ pub struct EntriesList {
   pub state: ListState,
   is_active: bool,
   pub multi_select_mode: bool,
-  /// IDs (`article_id`) of notes currently selected in multi-select mode.
+  /// IDs (`note_id`) of notes currently selected in multi-select mode.
   pub selected_notes: HashSet<String>,
 }
 
@@ -51,10 +51,10 @@ impl EntriesList {
       .iter()
       .map(|note| {
         let highlight_selected = self.multi_select_mode
-          && self.selected_notes.contains(&note.article_id);
+          && self.selected_notes.contains(&note.note_id);
 
         // *** Title ***
-        let mut title = note.article_title.to_string();
+        let mut title = note.title.to_string();
 
         if highlight_selected {
           title.insert_str(0, "* ");

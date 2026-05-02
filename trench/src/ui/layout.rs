@@ -787,10 +787,7 @@ fn draw_discovery_checklist(frame: &mut Frame, app: &App, area: Rect) {
       let cb = if checked { "[x]" } else { "[ ]" };
       let text = format!("  {cb} {cat}");
       let style = if is_cursor {
-        Style::default()
-          .bg(t.bg_selection)
-          .fg(t.text)
-          .add_modifier(Modifier::BOLD)
+        t.style_selection_text()
       } else if checked {
         Style::default().fg(t.accent)
       } else {
@@ -821,10 +818,7 @@ fn draw_discovery_checklist(frame: &mut Frame, app: &App, area: Rect) {
       };
       let text = format!("  {cb} {}{}", feed.name, reason);
       let style = if is_cursor {
-        Style::default()
-          .bg(t.bg_selection)
-          .fg(t.text)
-          .add_modifier(Modifier::BOLD)
+        t.style_selection_text()
       } else if checked {
         Style::default().fg(t.accent)
       } else {
@@ -961,7 +955,7 @@ fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
         format!("{prefix}{line}")
       };
       let style = if is_selected {
-        t.style_selection()
+        t.style_selection_text()
       } else {
         Style::default().fg(t.text_dim)
       };
@@ -1305,19 +1299,27 @@ fn feed_header_cell(label: &'static str, style: Style) -> Cell<'static> {
   ]))
 }
 
-fn feed_cell(value: &str, style: Style, _selected: bool) -> Cell<'static> {
+fn feed_cell(value: &str, style: Style, selected: bool) -> Cell<'static> {
   let mut lines = Vec::new();
   lines.push(Line::from(Span::styled(value.to_string(), style)));
-  lines.push(Line::from(""));
+  lines.push(feed_spacer_line(selected));
   Cell::from(Text::from(lines))
 }
 
 fn feed_title_lines(
   mut lines: Vec<Line<'static>>,
-  _selected: bool,
+  selected: bool,
 ) -> Vec<Line<'static>> {
-  lines.push(Line::from(""));
+  lines.push(feed_spacer_line(selected));
   lines
+}
+
+fn feed_spacer_line(selected: bool) -> Line<'static> {
+  if selected {
+    Line::from(Span::styled(" ", Style::default()))
+  } else {
+    Line::from("")
+  }
 }
 
 fn style_feed_title_lines(
@@ -1360,10 +1362,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
     let checkbox = if active { "[x]" } else { "[ ]" };
     let line = if cursor {
-      let hl = Style::default()
-        .bg(t.bg_selection)
-        .fg(t.text)
-        .add_modifier(Modifier::BOLD);
+      let hl = t.style_selection_text();
       Line::from(vec![
         Span::styled("  ", hl),
         Span::styled(checkbox, hl),
@@ -1515,7 +1514,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     cursor_line = lines.len();
   }
   let clear_style = if clear_hl {
-    Style::default().bg(t.bg_selection).fg(t.text).add_modifier(Modifier::BOLD)
+    t.style_selection_text()
   } else {
     Style::default().fg(t.text_dim)
   };
@@ -1758,28 +1757,32 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
       item.source_name.clone()
     };
-    let meta_summary = format!(
-      "{} · {} · {} · {}",
-      source_label,
-      item.content_type.short_label(),
-      item.published_at,
-      item.workflow_state.short_label()
-    );
-
     let title_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(t.text_dim);
+    let meta_style = Style::default().fg(t.text_dim);
+    let label_style =
+      Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD);
+    let dim_style = Style::default().fg(t.text_dim);
     let value_style = Style::default().fg(t.text);
+    let accent_style = Style::default().fg(t.accent);
     let detail_w = inner.width.max(1) as usize;
     let mut lines: Vec<Line> = textwrap::wrap(&item.title, detail_w)
       .into_iter()
       .take(2)
       .map(|line| Line::from(Span::styled(line.into_owned(), title_style)))
       .collect();
+
+    let meta_parts = [
+      source_label.as_str(),
+      item.content_type.short_label(),
+      item.published_at.as_str(),
+      item.workflow_state.short_label(),
+    ];
     lines.push(Line::from(Span::styled(
-      truncate(&meta_summary, detail_w),
-      label_style,
+      truncate(&meta_parts.join(" · "), detail_w),
+      meta_style,
     )));
     lines.push(Line::from(""));
+
     push_detail_field(
       &mut lines,
       "Authors",
@@ -1787,31 +1790,23 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       label_style,
       value_style,
       detail_w,
-      2,
+      3,
     );
 
-    let source_meta =
-      format!("{}   {}", source_label, item.content_type.short_label());
-    push_detail_field(
-      &mut lines,
-      "Source",
-      &source_meta,
-      label_style,
-      Style::default().fg(t.accent),
-      detail_w,
-      1,
-    );
+    lines.push(Line::from(""));
+    let mut source_spans = vec![
+      Span::styled("Source   ", label_style),
+      Span::styled(truncate(&source_label, 16), accent_style),
+      Span::styled("  ", dim_style),
+      Span::styled(item.content_type.short_label(), accent_style),
+    ];
     if item.source_platform == SourcePlatform::HuggingFace && item.upvote_count > 0 {
-      push_detail_field(
-        &mut lines,
-        "Votes",
-        &item.upvote_count.to_string(),
-        label_style,
-        value_style,
-        detail_w,
-        1,
-      );
+      source_spans.extend([
+        Span::styled("  votes ", dim_style),
+        Span::styled(item.upvote_count.to_string(), value_style),
+      ]);
     }
+    lines.push(Line::from(source_spans));
 
     if let Some(ref repo) = item.github_repo {
       let display = repo.strip_prefix("https://").unwrap_or(repo.as_str());
@@ -1820,21 +1815,23 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         "Repo",
         display,
         label_style,
-        Style::default().fg(t.accent),
+        accent_style,
         detail_w,
         1,
       );
     }
 
-    push_detail_field(
-      &mut lines,
-      "Tags",
-      &tags,
-      label_style,
-      value_style,
-      detail_w,
-      1,
-    );
+    if !tags.is_empty() {
+      push_detail_field(
+        &mut lines,
+        "Tags",
+        &tags,
+        label_style,
+        value_style,
+        detail_w,
+        2,
+      );
+    }
 
     if !item.benchmark_results.is_empty() {
       lines.push(Line::from(""));
@@ -1855,14 +1852,10 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut footer_lines: Vec<Line> = vec![
       Line::from(""),
-      Line::from(Span::styled(
-        "URL",
-        Style::default().fg(t.header).add_modifier(Modifier::BOLD),
-      )),
-      Line::from(Span::styled(
-        truncate(&item.url, inner.width as usize),
-        Style::default().fg(t.text_dim),
-      )),
+      Line::from(vec![
+        Span::styled("URL      ", label_style),
+        Span::styled(truncate(&item.url, detail_w.saturating_sub(9)), dim_style),
+      ]),
     ];
 
     if let Some(notif) = &app.notification {
@@ -1876,11 +1869,11 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if item.github_owner.is_some() && item.github_repo_name.is_some() {
-      footer_lines.push(Line::from(""));
       footer_lines.push(Line::from(vec![
-        Span::styled("Repo linked: press ", label_style),
+        Span::styled("Repo     ", label_style),
+        Span::styled("linked: press ", dim_style),
         Span::styled("v", Style::default().fg(t.success)),
-        Span::styled(" to view", label_style),
+        Span::styled(" to view", dim_style),
       ]));
     }
 
@@ -1940,10 +1933,7 @@ fn filter_row(
 ) -> Line<'static> {
   let checkbox = if active { "[x]" } else { "[ ]" };
   if cursor {
-    let hl = Style::default()
-      .bg(t.bg_selection)
-      .fg(t.text)
-      .add_modifier(Modifier::BOLD);
+    let hl = t.style_selection_text();
     Line::from(vec![
       Span::styled("  ", hl),
       Span::styled(checkbox, hl),
@@ -2155,33 +2145,63 @@ fn footer_command_line(app: &App) -> Line<'static> {
   Line::from(spans)
 }
 
+// ── Popup helpers ──────────────────────────────────────────────────────────
+
+fn popup_rect(
+  area: Rect,
+  width_pct: u16,
+  desired_h: u16,
+  min_w: u16,
+  min_h: u16,
+  max_h_pct: u16,
+) -> Rect {
+  let popup_w = (area.width as u32 * width_pct as u32 / 100) as u16;
+  let popup_w = popup_w.max(min_w).min(area.width);
+  let max_h = (area.height as u32 * max_h_pct as u32 / 100) as u16;
+  let popup_h = desired_h
+    .max(min_h)
+    .min(max_h.max(min_h).min(area.height))
+    .min(area.height);
+  let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
+  let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
+  Rect::new(popup_x, popup_y, popup_w, popup_h)
+}
+
+fn popup_inner(block_inner: Rect, pad_x: u16, pad_y: u16) -> Rect {
+  Rect {
+    x: block_inner.x.saturating_add(pad_x),
+    y: block_inner.y.saturating_add(pad_y),
+    width: block_inner.width.saturating_sub(pad_x.saturating_mul(2)),
+    height: block_inner.height.saturating_sub(pad_y.saturating_mul(2)),
+  }
+}
+
+fn quiet_popup_block(
+  title: &'static str,
+  t: &crate::theme::Theme,
+) -> Block<'static> {
+  Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(t.border_active))
+    .title(Span::styled(
+      title,
+      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+    ))
+}
+
 // ── A1: floating reader popup (Ldr+Enter) ─────────────────────────────────
 
 fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
   let t = app.active_theme.theme();
-  let popup_w = (area.width as u32 * 70 / 100) as u16;
-  let popup_h = ((area.height as u32 * 58 / 100) as u16).max(14);
-  let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
-  let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
-  let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+  let desired_h = (area.height as u32 * 58 / 100) as u16;
+  let popup_rect = popup_rect(area, 70, desired_h, 64, 14, 88);
 
   frame.render_widget(Clear, popup_rect);
 
-  let block = Block::default()
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(t.border_active))
-    .title(Span::styled(
-      " Reader · Esc close ",
-      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
-    ));
+  let block = quiet_popup_block(" Reader · Esc close ", &t);
 
   let block_inner = block.inner(popup_rect);
-  let inner = Rect {
-    x: block_inner.x.saturating_add(1),
-    y: block_inner.y.saturating_add(1),
-    width: block_inner.width.saturating_sub(2),
-    height: block_inner.height.saturating_sub(2),
-  };
+  let inner = popup_inner(block_inner, 1, 1);
   frame.render_widget(block, popup_rect);
 
   if let Some(editor) = app.reader_popup_editor.as_mut() {
@@ -2224,29 +2244,14 @@ fn draw_abstract_popup(frame: &mut Frame, app: &App) {
 
   let desired_h = (title_wrapped.len() + body_wrapped.len() + 5)
     .clamp(9, area.height as usize);
-  let max_h = area.height.saturating_sub(4).max(10).min(area.height);
-  let popup_h = (desired_h as u16).min(max_h).max(9);
-  let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
-  let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
-  let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+  let popup_rect = popup_rect(area, 70, desired_h as u16, 52, 9, 92);
 
   frame.render_widget(Clear, popup_rect);
 
-  let block = Block::default()
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(t.border_active))
-    .title(Span::styled(
-      " Abstract · Space/Esc close ",
-      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
-    ));
+  let block = quiet_popup_block(" Abstract · Space/Esc close ", &t);
 
   let block_inner = block.inner(popup_rect);
-  let inner = Rect {
-    x: block_inner.x.saturating_add(1),
-    y: block_inner.y.saturating_add(1),
-    width: block_inner.width.saturating_sub(2),
-    height: block_inner.height.saturating_sub(2),
-  };
+  let inner = popup_inner(block_inner, 1, 1);
   frame.render_widget(block, popup_rect);
 
   if inner.height == 0 {
@@ -2371,7 +2376,7 @@ fn draw_bottom_pane_feed(frame: &mut Frame, app: &App, area: Rect) {
     if is_selected {
       lines.push(Line::from(Span::styled(
         format!("▶ {title}"),
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        t.style_selection_text(),
       )));
     } else {
       lines.push(Line::from(Span::styled(
@@ -2446,8 +2451,7 @@ fn draw_sources_popup(frame: &mut Frame, app: &App) {
   let white = Style::default().fg(t.text);
   let bold_white = Style::default().fg(t.header).add_modifier(Modifier::BOLD);
   let cyan = Style::default().fg(t.accent);
-  let selected_style =
-    Style::default().bg(t.bg_selection).fg(t.text).add_modifier(Modifier::BOLD);
+  let selected_style = t.style_selection_text();
 
   let mut lines: Vec<Line> = Vec::new();
 
@@ -2900,10 +2904,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &App) {
     let theme = id.theme();
     let selected = idx == app.theme_picker_cursor;
     let row_style = if selected {
-      Style::default()
-        .fg(t.text)
-        .bg(t.bg_selection)
-        .add_modifier(Modifier::BOLD)
+      t.style_selection_text()
     } else {
       Style::default().fg(t.text)
     };
@@ -3147,12 +3148,11 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     &[
       ("j / k", "Move down / up"),
       ("g / G", "Jump to top / bottom"),
-      ("l / →", "Focus details pane"),
       ("Tab", "Switch Inbox / Discoveries"),
       ("f", "Focus filter panel"),
       ("Enter", "Open paper in reader"),
       ("Esc", "Quit (from feed) / go back"),
-      ("click", "Focus any pane"),
+      ("click", "Focus interactive pane"),
     ],
   ),
   (
@@ -3169,9 +3169,9 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Ldr+c", "Toggle chat panel"),
       ("Ldr+z", "Move chat top / bottom"),
       ("Ldr+S", "Open settings"),
-      ("Ldr+h / Ldr+l", "Focus pane left / right"),
-      ("Ldr+j / Ldr+k", "Focus pane down / up"),
-      ("Ldr+1 / 2 / 3", "Focus pane by number"),
+      ("Ldr+h / Ldr+l", "Focus interactive pane left / right"),
+      ("Ldr+j / Ldr+k", "Focus interactive pane down / up"),
+      ("Ldr+1 / 2 / 3", "Focus interactive pane by number"),
       ("", ""),
       ("Notes / Reader tabs", ""),
       ("Ldr+[", "Previous tab"),
@@ -3287,33 +3287,15 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
 
   let (_, bindings) =
     HELP_SECTIONS[app.help_section.min(HELP_SECTIONS.len() - 1)];
-  let body_rows = bindings.len() as u16 + 3;
-  let popup_w = ((area.width as f32 * 0.68) as u16).max(64).min(area.width);
-  let popup_h = body_rows
-    .saturating_add(5)
-    .max(14)
-    .min((area.height as f32 * 0.72) as u16)
-    .min(area.height);
-  let popup_x = (area.width.saturating_sub(popup_w)) / 2;
-  let popup_y = (area.height.saturating_sub(popup_h)) / 2;
-  let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+  let body_rows = bindings.len() as u16;
+  let desired_h = body_rows.saturating_add(5);
+  let popup_rect = popup_rect(area, 68, desired_h, 64, 12, 72);
 
   frame.render_widget(Clear, popup_rect);
 
-  let block = Block::default()
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(t.border_active))
-    .title(Span::styled(
-      " Help · q/Esc close ",
-      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
-    ));
+  let block = quiet_popup_block(" Help · q/Esc close ", &t);
   let block_inner = block.inner(popup_rect);
-  let inner = Rect {
-    x: block_inner.x.saturating_add(1),
-    y: block_inner.y,
-    width: block_inner.width.saturating_sub(2),
-    height: block_inner.height,
-  };
+  let inner = popup_inner(block_inner, 1, 0);
   frame.render_widget(block, popup_rect);
 
   let layout_rows = Layout::vertical([
@@ -3333,11 +3315,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
   let tab_style_inactive = Style::default().fg(t.text_dim);
   let mut tab_spans: Vec<Span> = Vec::new();
   for (i, (name, _)) in HELP_SECTIONS.iter().enumerate() {
-    let label = format!("{name}");
     if i == app.help_section {
-      tab_spans.push(Span::styled(label, tab_style_active));
+      tab_spans.push(Span::styled(*name, tab_style_active));
     } else {
-      tab_spans.push(Span::styled(label, tab_style_inactive));
+      tab_spans.push(Span::styled(*name, tab_style_inactive));
     }
     if i + 1 < HELP_SECTIONS.len() {
       tab_spans.push(Span::styled("  |  ", Style::default().fg(t.border)));
@@ -3351,14 +3332,20 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     sep_area,
   );
 
-  let key_col_w = 18u16;
+  let key_col_w = bindings
+    .iter()
+    .filter(|(_, desc)| !desc.is_empty())
+    .map(|(key, _)| key.chars().count())
+    .max()
+    .unwrap_or(10)
+    .clamp(10, 16);
 
   let key_style = Style::default().fg(t.accent);
   let header_style = Style::default().fg(t.header).add_modifier(Modifier::BOLD);
   let desc_style = Style::default().fg(t.text);
   let gray = Style::default().fg(t.text_dim);
 
-  let mut body_lines: Vec<Line> = vec![Line::from("")];
+  let mut body_lines: Vec<Line> = Vec::new();
   for (key, desc) in bindings.iter() {
     if key.is_empty() && desc.is_empty() {
       // blank spacer row
@@ -3367,11 +3354,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     }
     if !key.is_empty() && desc.is_empty() {
       // section subheading (key text, no description)
-      let header_cell = format!("  {}", key);
-      body_lines.push(Line::from(Span::styled(header_cell, header_style)));
+      body_lines.push(Line::from(Span::styled(*key, header_style)));
       continue;
     }
-    let key_cell = format!("  {:<width$}", key, width = key_col_w as usize);
+    let key_cell = format!("{:<width$}  ", key, width = key_col_w);
     body_lines.push(Line::from(vec![
       Span::styled(key_cell, key_style),
       Span::styled(*desc, desc_style),
@@ -3387,7 +3373,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     .render_widget(Paragraph::new(body_lines).scroll((scroll, 0)), body_area);
   frame.render_widget(
     Paragraph::new(Line::from(Span::styled(
-      "Tab/h/l next section | j/k scroll | q/Esc close",
+      "Tab/h/l section | j/k scroll | q/Esc close",
       gray,
     ))),
     footer_area,

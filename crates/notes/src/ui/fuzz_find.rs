@@ -22,7 +22,7 @@ const FOOTER_MARGINE: usize = 8;
 
 pub struct FuzzFindPopup<'a> {
   query_text_box: TextArea<'a>,
-  /// Map of `article_id` → `article_title`.
+  /// Map of `note_id` → `title`.
   entries: HashMap<String, String>,
   search_query: Option<String>,
   filtered_entries: Vec<FilteredEntry>,
@@ -32,6 +32,7 @@ pub struct FuzzFindPopup<'a> {
 
 pub enum FuzzFindReturn {
   Close,
+  KeepPopup,
   SelectEntry(Option<String>),
 }
 
@@ -161,9 +162,19 @@ impl FuzzFindPopup<'_> {
     let has_control = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
-      KeyCode::Esc | KeyCode::Enter => return FuzzFindReturn::Close,
-      KeyCode::Char('c') | KeyCode::Char('m') if has_control => {
-        return FuzzFindReturn::Close;
+      KeyCode::Esc => return FuzzFindReturn::Close,
+      KeyCode::Char('c') if has_control => return FuzzFindReturn::Close,
+      KeyCode::Enter => {
+        let id = self.list_state.selected().and_then(|idx| {
+          self.filtered_entries.get(idx).map(|e| e.id.clone())
+        });
+        return FuzzFindReturn::SelectEntry(id);
+      }
+      KeyCode::Char('m') if has_control => {
+        let id = self.list_state.selected().and_then(|idx| {
+          self.filtered_entries.get(idx).map(|e| e.id.clone())
+        });
+        return FuzzFindReturn::SelectEntry(id);
       }
       KeyCode::Up => self.cycle_prev_entry(),
       KeyCode::Char('p') if has_control => self.cycle_prev_entry(),
@@ -176,16 +187,7 @@ impl FuzzFindPopup<'_> {
       }
     }
 
-    let selected_id = self.list_state.selected().map(|idx| {
-      self
-        .filtered_entries
-        .get(idx)
-        .expect("Index must be in the list boundaries")
-        .id
-        .clone()
-    });
-
-    FuzzFindReturn::SelectEntry(selected_id)
+    FuzzFindReturn::KeepPopup
   }
 
   pub fn cycle_next_entry(&mut self) {

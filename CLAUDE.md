@@ -166,10 +166,10 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 - [x] Secondary split view — three-state cycle (full → split → dual) via Ldr+v
 
 ## Reader pane tabs
-- [ ] Tabbed reader panes: open multiple papers and switch between them (like browser tabs)
-- [ ] Tab bar across the top of the reader area showing open paper titles (truncated)
-- [ ] Ldr+t to open a new tab; Ldr+w to close current tab
-- [ ] Switch tabs with Ldr+[ / Ldr+] or number keys
+- [x] Tabbed reader panes: open multiple papers and switch between them (like browser tabs)
+- [x] Tab bar across the top of the reader area showing open paper titles (truncated)
+- [x] Ldr+t to open a new tab; Ldr+w to close current tab
+- [x] Switch tabs with Ldr+[ / Ldr+] or number keys
 - [ ] Side-by-side mode: two papers simultaneously (distinct from current dual-reader)
 - [ ] Tab state persists across sessions
 
@@ -187,8 +187,8 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 - [x] Notes panel opens in right pane alongside reader (60/40 split)
 - [x] Notes anchored to paper (keyed by URL/arXiv ID)
 - [x] Notes persist to disk
-- [ ] Tabbed notes: multiple note documents open at once, tab bar across top of notes pane
-- [ ] Reopening a paper restores its notes tab
+- [x] Tabbed notes: multiple note documents open at once, tab bar across top of notes pane
+- [x] Reopening a paper restores its notes tab
 
 ## Help screen
 - [x] Design and implement full help screen

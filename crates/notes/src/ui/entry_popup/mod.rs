@@ -21,8 +21,7 @@ const FOOTER_MARGIN: u16 = 15;
 /// Data collected by the note popup on confirm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotePopupData {
-  pub article_title: String,
-  pub article_url: String,
+  pub title: String,
   pub tags: Vec<String>,
 }
 
@@ -36,12 +35,10 @@ pub enum NotePopupReturn {
 
 pub struct NotePopup<'a> {
   title_txt: TextArea<'a>,
-  url_txt: TextArea<'a>,
   tags_txt: TextArea<'a>,
   is_edit_note: bool,
   active_txt: ActiveText,
   title_err_msg: String,
-  url_err_msg: String,
   tags_err_msg: String,
   tags_popup: Option<TagsPopup>,
 }
@@ -49,7 +46,6 @@ pub struct NotePopup<'a> {
 #[derive(Debug, PartialEq, Eq)]
 enum ActiveText {
   Title,
-  Url,
   Tags,
 }
 
@@ -57,23 +53,18 @@ impl NotePopup<'_> {
   pub fn new_note() -> Self {
     Self {
       title_txt: TextArea::default(),
-      url_txt: TextArea::default(),
       tags_txt: TextArea::default(),
       is_edit_note: false,
       active_txt: ActiveText::Title,
       title_err_msg: String::default(),
-      url_err_msg: String::default(),
       tags_err_msg: String::default(),
       tags_popup: None,
     }
   }
 
   pub fn from_note(note: &Note) -> Self {
-    let mut title_txt = TextArea::new(vec![note.article_title.to_owned()]);
+    let mut title_txt = TextArea::new(vec![note.title.to_owned()]);
     title_txt.move_cursor(CursorMove::End);
-
-    let mut url_txt = TextArea::new(vec![note.article_url.to_owned()]);
-    url_txt.move_cursor(CursorMove::End);
 
     let tags = tags_to_text(&note.tags);
     let mut tags_txt = TextArea::new(vec![tags]);
@@ -81,12 +72,29 @@ impl NotePopup<'_> {
 
     let mut popup = Self {
       title_txt,
-      url_txt,
       tags_txt,
       is_edit_note: true,
       active_txt: ActiveText::Title,
       title_err_msg: String::default(),
-      url_err_msg: String::default(),
+      tags_err_msg: String::default(),
+      tags_popup: None,
+    };
+
+    popup.validate_all();
+    popup
+  }
+
+  /// New-note popup pre-filled with a title (e.g. from the selected feed item).
+  pub fn with_prefill(title: &str) -> Self {
+    let mut title_txt = TextArea::new(vec![title.to_owned()]);
+    title_txt.move_cursor(CursorMove::End);
+
+    let mut popup = Self {
+      title_txt,
+      tags_txt: TextArea::default(),
+      is_edit_note: false,
+      active_txt: ActiveText::Title,
+      title_err_msg: String::default(),
       tags_err_msg: String::default(),
       tags_popup: None,
     };
@@ -96,7 +104,7 @@ impl NotePopup<'_> {
   }
 
   pub fn render_widget(&mut self, frame: &mut Frame, area: Rect) {
-    let mut area = centered_rect_exact_height(70, 15, area);
+    let mut area = centered_rect_exact_height(70, 12, area);
 
     const FOOTER_LEN: u16 = FOOTER_TEXT.len() as u16 + FOOTER_MARGIN;
     if area.width < FOOTER_LEN {
@@ -123,7 +131,6 @@ impl NotePopup<'_> {
         [
           Constraint::Length(3),
           Constraint::Length(3),
-          Constraint::Length(3),
           Constraint::Min(1),
         ]
         .as_ref(),
@@ -131,7 +138,6 @@ impl NotePopup<'_> {
       .split(area);
 
     self.title_txt.set_cursor_line_style(Style::default());
-    self.url_txt.set_cursor_line_style(Style::default());
     self.tags_txt.set_cursor_line_style(Style::default());
 
     let active_block_style = Style::default().fg(theme::current().accent);
@@ -169,33 +175,6 @@ impl NotePopup<'_> {
       );
     }
 
-    // URL field
-    if self.url_err_msg.is_empty() {
-      let (block, cursor) = match self.active_txt {
-        ActiveText::Url => (active_block_style, active_cursor_style),
-        _ => (reset_style, deactivate_cursor_style),
-      };
-      self.url_txt.set_style(block);
-      self.url_txt.set_cursor_style(cursor);
-      self.url_txt.set_block(
-        Block::default().borders(Borders::ALL).style(block).title("URL"),
-      );
-    } else {
-      let cursor = if self.active_txt == ActiveText::Url {
-        invalid_cursor_style
-      } else {
-        deactivate_cursor_style
-      };
-      self.url_txt.set_style(invalid_block_style);
-      self.url_txt.set_cursor_style(cursor);
-      self.url_txt.set_block(
-        Block::default()
-          .borders(Borders::ALL)
-          .style(invalid_block_style)
-          .title(format!("URL : {}", self.url_err_msg)),
-      );
-    }
-
     // Tags field
     if self.tags_err_msg.is_empty() {
       let (block, cursor, title) = match self.active_txt {
@@ -228,15 +207,14 @@ impl NotePopup<'_> {
     }
 
     frame.render_widget(&self.title_txt, chunks[0]);
-    frame.render_widget(&self.url_txt, chunks[1]);
-    frame.render_widget(&self.tags_txt, chunks[2]);
+    frame.render_widget(&self.tags_txt, chunks[1]);
 
     let footer = Paragraph::new(FOOTER_TEXT)
       .alignment(Alignment::Center)
       .wrap(Wrap { trim: false })
       .block(Block::default().borders(Borders::NONE).style(Style::default()));
 
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[2]);
 
     if let Some(tags_popup) = self.tags_popup.as_mut() {
       tags_popup.render_widget(frame, area);
@@ -244,14 +222,11 @@ impl NotePopup<'_> {
   }
 
   pub fn is_input_valid(&self) -> bool {
-    self.title_err_msg.is_empty()
-      && self.url_err_msg.is_empty()
-      && self.tags_err_msg.is_empty()
+    self.title_err_msg.is_empty() && self.tags_err_msg.is_empty()
   }
 
   pub fn validate_all(&mut self) {
     self.validate_title();
-    self.validate_url();
     self.validate_tags();
   }
 
@@ -261,11 +236,6 @@ impl NotePopup<'_> {
     } else {
       self.title_err_msg.clear();
     }
-  }
-
-  fn validate_url(&mut self) {
-    // URL is optional — no hard validation, just kept for error message symmetry
-    self.url_err_msg.clear();
   }
 
   fn validate_tags(&mut self) {
@@ -294,8 +264,7 @@ impl NotePopup<'_> {
       KeyCode::Char('m') if has_ctrl => self.handle_confirm(),
       KeyCode::Tab | KeyCode::Down => {
         self.active_txt = match self.active_txt {
-          ActiveText::Title => ActiveText::Url,
-          ActiveText::Url => ActiveText::Tags,
+          ActiveText::Title => ActiveText::Tags,
           ActiveText::Tags => ActiveText::Title,
         };
         NotePopupReturn::KeepPopup
@@ -303,8 +272,7 @@ impl NotePopup<'_> {
       KeyCode::Up => {
         self.active_txt = match self.active_txt {
           ActiveText::Title => ActiveText::Tags,
-          ActiveText::Url => ActiveText::Title,
-          ActiveText::Tags => ActiveText::Url,
+          ActiveText::Tags => ActiveText::Title,
         };
         NotePopupReturn::KeepPopup
       }
@@ -323,11 +291,6 @@ impl NotePopup<'_> {
           ActiveText::Title => {
             if self.title_txt.input(key) {
               self.validate_title();
-            }
-          }
-          ActiveText::Url => {
-            if self.url_txt.input(key) {
-              self.validate_url();
             }
           }
           ActiveText::Tags => {
@@ -363,13 +326,12 @@ impl NotePopup<'_> {
       return NotePopupReturn::KeepPopup;
     }
 
-    let article_title = self.title_txt.lines()[0].to_owned();
-    let article_url = self.url_txt.lines()[0].to_owned();
+    let title = self.title_txt.lines()[0].to_owned();
     let tags = text_to_tags(
       self.tags_txt.lines().first().expect("Tags TextBox have one line"),
     );
 
-    let data = NotePopupData { article_title, article_url, tags };
+    let data = NotePopupData { title, tags };
 
     if self.is_edit_note {
       NotePopupReturn::UpdateNote(data)

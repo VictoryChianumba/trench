@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::app::NotesTab;
 use crate::models::WorkflowState;
 
 /// Restrict a file to owner-read/write only (0o600). Best-effort on Unix.
@@ -68,6 +69,10 @@ pub fn save(state: &HashMap<String, WorkflowState>) {
 pub struct UiState {
   pub last_read:        Option<String>,
   pub last_read_source: Option<String>,
+  #[serde(default)]
+  pub notes_tabs:       Vec<NotesTab>,
+  #[serde(default)]
+  pub notes_active_tab: usize,
 }
 
 fn ui_path() -> Option<PathBuf> {

@@ -22,7 +22,7 @@ const DEFAULT_FILE_NAME: &str = "hygg_notes_export.json";
 pub struct ExportPopup<'a> {
   path_txt: TextArea<'a>,
   path_err_msg: String,
-  /// `article_id` of the note being exported, or `None` for multi-select.
+  /// `note_id` of the note being exported, or `None` for multi-select.
   note_id: Option<String>,
   paragraph_text: String,
 }
@@ -40,18 +40,18 @@ impl ExportPopup<'_> {
 
     // Add filename if it's not already defined
     if path.extension().is_none() {
-      path.push(format!("{}.txt", note.article_title.as_str()));
+      path.push(format!("{}.txt", note.title.as_str()));
     }
 
     let mut path_txt = TextArea::new(vec![path.to_string_lossy().to_string()]);
     path_txt.move_cursor(CursorMove::End);
 
-    let paragraph_text = format!("Note: {}", note.article_title.to_owned());
+    let paragraph_text = format!("Note: {}", note.title.to_owned());
 
     let mut export_popup = ExportPopup {
       path_txt,
       path_err_msg: String::default(),
-      note_id: Some(note.article_id.clone()),
+      note_id: Some(note.note_id.clone()),
       paragraph_text,
     };
 
