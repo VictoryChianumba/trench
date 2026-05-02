@@ -9,6 +9,8 @@ pub enum SourcePlatform {
   Newsletter,
   HuggingFace,
   Rss,
+  OpenReview,
+  Core,
 }
 
 impl SourcePlatform {
@@ -21,6 +23,8 @@ impl SourcePlatform {
       Self::Newsletter => "news",
       Self::HuggingFace => "hf",
       Self::Rss => "rss",
+      Self::OpenReview => "OR",
+      Self::Core => "CORE",
     }
   }
 }
@@ -144,8 +148,11 @@ impl FeedItem {
       }
       SourcePlatform::Blog
       | SourcePlatform::PapersWithCode
-      | SourcePlatform::Twitter => SignalLevel::Secondary,
-      SourcePlatform::Newsletter | SourcePlatform::Rss => SignalLevel::Tertiary,
+      | SourcePlatform::Twitter
+      | SourcePlatform::OpenReview => SignalLevel::Secondary,
+      SourcePlatform::Newsletter
+      | SourcePlatform::Rss
+      | SourcePlatform::Core => SignalLevel::Tertiary,
     }
   }
 }

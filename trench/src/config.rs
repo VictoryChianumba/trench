@@ -13,8 +13,17 @@ pub const KNOWN_ARXIV_CATS: &[(&str, &str)] = &[
 ];
 
 /// Ordered list of predefined (non-custom) RSS sources.
-pub const PREDEFINED_SOURCES: &[&str] =
-  &["huggingface", "openai", "deepmind", "import_ai", "bair", "mit_news_ai"];
+pub const PREDEFINED_SOURCES: &[&str] = &[
+  "huggingface",
+  "openai",
+  "deepmind",
+  "import_ai",
+  "bair",
+  "mit_news_ai",
+  "papers_with_code",
+  "openreview",
+  "core",
+];
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default, Clone)]
 pub struct Config {
@@ -26,6 +35,8 @@ pub struct Config {
   pub claude_api_key: Option<String>,
   #[serde(default)]
   pub openai_api_key: Option<String>,
+  #[serde(default)]
+  pub core_api_key: Option<String>,
   #[serde(default = "default_chat_provider")]
   pub default_chat_provider: String,
   #[serde(default)]
@@ -67,6 +78,9 @@ impl Default for SourcesConfig {
         ("import_ai".to_string(), true),
         ("bair".to_string(), true),
         ("mit_news_ai".to_string(), true),
+        ("papers_with_code".to_string(), true),
+        ("openreview".to_string(), true),
+        ("core".to_string(), false), // requires API key — disabled until configured
       ]),
       custom_feeds: vec![],
     }

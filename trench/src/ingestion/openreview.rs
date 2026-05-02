@@ -1,0 +1,154 @@
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::models::{
+  ContentType, FeedItem, SignalLevel, SourcePlatform, WorkflowState,
+  detect_subtopics,
+};
+
+// Venues to fetch. Invitation strings are venue-specific; these cover the
+// major ML conferences for the current and prior cycle.
+const VENUES: &[&str] = &[
+  "ICLR.cc/2025/Conference/-/Submission",
+  "NeurIPS.cc/2024/Conference/-/Submission",
+  "ICML.cc/2024/Conference/-/Submission",
+];
+
+pub fn fetch() -> Result<Vec<FeedItem>, String> {
+  let mut items = Vec::new();
+  for venue in VENUES {
+    match fetch_venue(venue) {
+      Ok(mut venue_items) => items.append(&mut venue_items),
+      Err(e) => log::warn!("openreview: venue {venue} failed — {e}"),
+    }
+  }
+  Ok(items)
+}
+
+fn fetch_venue(invitation: &str) -> Result<Vec<FeedItem>, String> {
+  let encoded =
+    invitation.chars().map(|c| if c == '/' { "%2F".to_string() } else { c.to_string() }).collect::<String>();
+  let url = format!(
+    "https://api2.openreview.net/notes\
+     ?invitation={encoded}&limit=50&offset=0"
+  );
+  let resp = crate::http::client()
+    .get(&url)
+    .header("User-Agent", "trench/1.0")
+    .send()
+    .map_err(|e| format!("HTTP failed: {e}"))?;
+  let body =
+    crate::http::read_body(resp).map_err(|e| format!("read failed: {e}"))?;
+
+  let parsed: OrResponse = serde_json::from_str(&body)
+    .map_err(|e| format!("JSON parse failed: {e}"))?;
+
+  let mut items = Vec::new();
+  for note in parsed.notes {
+    if let Some(item) = note_to_item(note) {
+      items.push(item);
+    }
+  }
+  Ok(items)
+}
+
+fn note_to_item(note: OrNote) -> Option<FeedItem> {
+  let content = note.content?;
+
+  let title = extract_str(&content, "title")?;
+  let title = super::collapse_whitespace(&title);
+  if title.is_empty() {
+    return None;
+  }
+
+  let summary = extract_str(&content, "abstract").unwrap_or_default();
+  let summary = super::collapse_whitespace(&summary);
+
+  let authors: Vec<String> = content
+    .get("authors")
+    .and_then(|v| {
+      // authors can be {"value": [...]} or directly [...]
+      let arr = v.get("value").unwrap_or(v);
+      arr.as_array().map(|a| {
+        a.iter()
+          .filter_map(|x| x.as_str().map(|s| s.to_string()))
+          .collect()
+      })
+    })
+    .unwrap_or_default();
+
+  // cdate is milliseconds since epoch
+  let published_at = note
+    .cdate
+    .map(|ms| {
+      let secs = ms / 1000;
+      let dt = chrono::DateTime::from_timestamp(secs, 0)
+        .unwrap_or_default()
+        .format("%Y-%m-%d")
+        .to_string();
+      dt
+    })
+    .unwrap_or_default();
+
+  // Prefer arXiv URL for deduplication with the arXiv ingestion source.
+  let arxiv_id = extract_str(&content, "arxiv");
+  let (id, url) = if let Some(ref aid) = arxiv_id {
+    let u = format!("https://arxiv.org/abs/{aid}");
+    (u.clone(), u)
+  } else {
+    let u = format!("https://openreview.net/forum?id={}", note.id);
+    (u.clone(), u)
+  };
+
+  let github_repo = extract_str(&content, "code");
+
+  let domain_tags: Vec<String> =
+    detect_subtopics(&title, &summary).iter().map(|s| s.to_string()).collect();
+
+  let mut item = FeedItem {
+    id,
+    title,
+    source_platform: SourcePlatform::OpenReview,
+    content_type: ContentType::Paper,
+    domain_tags,
+    signal: SignalLevel::Secondary,
+    published_at,
+    authors,
+    summary_short: summary,
+    workflow_state: WorkflowState::Inbox,
+    url,
+    upvote_count: 0,
+    github_repo,
+    github_owner: None,
+    github_repo_name: None,
+    benchmark_results: vec![],
+    full_content: None,
+    source_name: "openreview".to_string(),
+  };
+  item.signal = item.compute_signal();
+  Some(item)
+}
+
+// Extract a string from a content object where the value may be stored as
+// `{"value": "..."}` (v2 API) or as a plain string.
+fn extract_str(content: &Value, key: &str) -> Option<String> {
+  let v = content.get(key)?;
+  if let Some(s) = v.as_str() {
+    return Some(s.to_string());
+  }
+  v.get("value")?.as_str().map(|s| s.to_string())
+}
+
+#[derive(Deserialize)]
+struct OrResponse {
+  #[serde(default)]
+  notes: Vec<OrNote>,
+}
+
+#[derive(Deserialize)]
+struct OrNote {
+  id: String,
+  #[serde(default)]
+  cdate: Option<i64>,
+  content: Option<Value>,
+}

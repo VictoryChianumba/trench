@@ -98,6 +98,68 @@ fn spawn_fetch(tx: mpsc::Sender<FetchMessage>, config: config::Config) {
       let _ = tx.send(FetchMessage::SourceComplete("huggingface".to_string()));
     }
 
+    if enabled("papers_with_code") {
+      log::info!("source papers_with_code: starting fetch");
+      match ingestion::papers_with_code::fetch() {
+        Ok(items) => {
+          log::info!("source papers_with_code: completed, {} items", items.len());
+          all_items.extend(items.clone());
+          let _ = tx.send(FetchMessage::Items(items));
+          let _ = tx.send(FetchMessage::SourceComplete("papers_with_code".to_string()));
+        }
+        Err(e) => {
+          log::error!("source papers_with_code: failed — {e}");
+          let _ = tx.send(FetchMessage::SourceError("papers_with_code".to_string(), e));
+        }
+      }
+    } else {
+      log::info!("source papers_with_code: disabled — skipping");
+      let _ = tx.send(FetchMessage::SourceComplete("papers_with_code".to_string()));
+    }
+
+    if enabled("openreview") {
+      log::info!("source openreview: starting fetch");
+      match ingestion::openreview::fetch() {
+        Ok(items) => {
+          log::info!("source openreview: completed, {} items", items.len());
+          all_items.extend(items.clone());
+          let _ = tx.send(FetchMessage::Items(items));
+          let _ = tx.send(FetchMessage::SourceComplete("openreview".to_string()));
+        }
+        Err(e) => {
+          log::error!("source openreview: failed — {e}");
+          let _ = tx.send(FetchMessage::SourceError("openreview".to_string(), e));
+        }
+      }
+    } else {
+      log::info!("source openreview: disabled — skipping");
+      let _ = tx.send(FetchMessage::SourceComplete("openreview".to_string()));
+    }
+
+    if enabled("core") {
+      if let Some(key) = config.core_api_key.as_deref() {
+        log::info!("source core: starting fetch");
+        match ingestion::core::fetch(key) {
+          Ok(items) => {
+            log::info!("source core: completed, {} items", items.len());
+            all_items.extend(items.clone());
+            let _ = tx.send(FetchMessage::Items(items));
+            let _ = tx.send(FetchMessage::SourceComplete("core".to_string()));
+          }
+          Err(e) => {
+            log::error!("source core: failed — {e}");
+            let _ = tx.send(FetchMessage::SourceError("core".to_string(), e));
+          }
+        }
+      } else {
+        log::info!("source core: no API key configured — skipping");
+        let _ = tx.send(FetchMessage::SourceComplete("core".to_string()));
+      }
+    } else {
+      log::info!("source core: disabled — skipping");
+      let _ = tx.send(FetchMessage::SourceComplete("core".to_string()));
+    }
+
     log::warn!(
       "source anthropic: no RSS feed available; skipping \
        (https://www.anthropic.com/news has no feed link)"
@@ -380,6 +442,9 @@ pub(crate) fn do_refresh(app: &mut App) {
   let mut sources = vec![
     "arxiv".to_string(),
     "huggingface".to_string(),
+    "papers_with_code".to_string(),
+    "openreview".to_string(),
+    "core".to_string(),
     "openai".to_string(),
     "deepmind".to_string(),
     "import_ai".to_string(),
