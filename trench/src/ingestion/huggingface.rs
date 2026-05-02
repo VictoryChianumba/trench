@@ -72,7 +72,7 @@ fn fetch_abstracts(items: &mut Vec<FeedItem>) {
   }
 }
 
-/// Parse an arXiv Atom response and return a map of arXiv ID → truncated abstract.
+/// Parse an arXiv Atom response and return a map of arXiv ID → full abstract.
 fn parse_abstracts(xml: &str) -> HashMap<String, String> {
   let mut map = HashMap::new();
   let mut reader = Reader::from_str(xml);
@@ -115,7 +115,7 @@ fn parse_abstracts(xml: &str) -> HashMap<String, String> {
           in_entry = false;
           if let Some(id) = extract_arxiv_id(&entry_id) {
             let clean = collapse_whitespace(summary.trim());
-            map.insert(id, truncate_chars(&clean, 300));
+            map.insert(id, clean);
           }
         }
       }
@@ -142,7 +142,7 @@ fn extract_arxiv_id(url: &str) -> Option<String> {
   if id.is_empty() { None } else { Some(id.to_string()) }
 }
 
-use super::{collapse_whitespace, truncate_chars};
+use super::collapse_whitespace;
 
 // ---------------------------------------------------------------------------
 // HTTP

@@ -241,7 +241,8 @@ impl<'de> Deserialize<'de> for ThemeId {
     D: Deserializer<'de>,
   {
     let s = String::deserialize(deserializer)?;
-    Self::from_id(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown theme: {s}")))
+    Self::from_id(&s)
+      .ok_or_else(|| serde::de::Error::custom(format!("unknown theme: {s}")))
   }
 }
 
@@ -288,7 +289,7 @@ impl Theme {
       bg: Color::Black,
       bg_panel: Color::Black,
       bg_input: Color::Rgb(22, 31, 40),
-      bg_selection: Color::Rgb(58, 74, 90),
+      bg_selection: Color::Rgb(42, 58, 72),
       bg_code: Color::Rgb(28, 28, 28),
       bg_chat: Color::Rgb(18, 18, 18),
       bg_user_msg: Color::Rgb(35, 35, 35),
@@ -663,6 +664,17 @@ impl Theme {
     Style::default().bg(self.bg_selection).fg(self.text)
   }
 
+  pub fn style_selection_text(&self) -> Style {
+    Style::default()
+      .bg(self.bg_selection)
+      .fg(self.text)
+      .add_modifier(Modifier::BOLD)
+  }
+
+  pub fn style_selection_dim(&self) -> Style {
+    Style::default().bg(self.bg_selection).fg(self.text)
+  }
+
   pub fn style_success(&self) -> Style {
     Style::default().fg(self.success)
   }
@@ -676,7 +688,13 @@ impl Theme {
   }
 }
 
-fn powder(bg: Color, panel: Color, text: Color, accent: Color, soft: Color) -> Theme {
+fn powder(
+  bg: Color,
+  panel: Color,
+  text: Color,
+  accent: Color,
+  soft: Color,
+) -> Theme {
   Theme {
     accent,
     header: accent,
@@ -816,9 +834,18 @@ mod tests {
 
   #[test]
   fn legacy_theme_names_deserialize() {
-    assert_eq!(serde_json::from_str::<ThemeId>("\"Dark\"").unwrap(), ThemeId::Dark);
-    assert_eq!(serde_json::from_str::<ThemeId>("\"Light\"").unwrap(), ThemeId::Light);
-    assert_eq!(serde_json::from_str::<ThemeId>("\"Amoled\"").unwrap(), ThemeId::Amoled);
+    assert_eq!(
+      serde_json::from_str::<ThemeId>("\"Dark\"").unwrap(),
+      ThemeId::Dark
+    );
+    assert_eq!(
+      serde_json::from_str::<ThemeId>("\"Light\"").unwrap(),
+      ThemeId::Light
+    );
+    assert_eq!(
+      serde_json::from_str::<ThemeId>("\"Amoled\"").unwrap(),
+      ThemeId::Amoled
+    );
   }
 
   #[test]

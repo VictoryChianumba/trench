@@ -180,8 +180,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
           current_tag.clear();
 
           let clean_title = collapse_whitespace(&title);
-          let summary_short =
-            truncate_chars(&collapse_whitespace(&summary), 300);
+          let summary_short = collapse_whitespace(&summary);
           // arXiv published_at looks like "2026-03-15T00:00:00Z" — keep date only
           let date =
             published_at.split('T').next().unwrap_or(&published_at).to_string();
@@ -242,7 +241,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
   Ok(items)
 }
 
-use super::{collapse_whitespace, truncate_chars};
+use super::collapse_whitespace;
 
 fn encode_arxiv_query(query: &str) -> String {
   query

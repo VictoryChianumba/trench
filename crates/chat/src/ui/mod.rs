@@ -970,15 +970,12 @@ impl ChatUi {
       .map(|(i, spec)| {
         let selected = start + i == self.slash_selected;
         let style = if selected {
-          Style::default()
-            .bg(t.bg_selection)
-            .fg(t.text)
-            .add_modifier(Modifier::BOLD)
+          t.style_selection_text()
         } else {
           Style::default().fg(t.text_dim).bg(t.bg_chat)
         };
         let command_style = if selected {
-          style.fg(t.text)
+          t.style_selection_text()
         } else {
           Style::default().fg(t.accent).bg(t.bg_chat)
         };

@@ -173,7 +173,7 @@ fn draw_tree_pane(
       if i == ctx.tree_cursor {
         Line::from(Span::styled(
           text,
-          t.style_selection().add_modifier(Modifier::BOLD),
+          t.style_selection_text(),
         ))
       } else {
         let col = match node.node_type {

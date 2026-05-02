@@ -207,7 +207,7 @@ fn parse_feed(
 
           let clean_title = collapse_whitespace(&title);
           let raw_summary = strip_html(&collapse_whitespace(&summary));
-          let summary_short = truncate_chars(&raw_summary, 300);
+          let summary_short = raw_summary.clone();
           let date = normalise_date(&published_at);
           let authors = if author.trim().is_empty() {
             vec![]
@@ -294,7 +294,7 @@ fn local_name(raw: &[u8]) -> String {
   }
 }
 
-use super::{collapse_whitespace, truncate_chars};
+use super::collapse_whitespace;
 
 /// Remove HTML tags, replacing them with a space.
 ///
