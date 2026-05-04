@@ -199,6 +199,15 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
       };
       app.reset_active_feed_position();
     }
+    KeyCode::BackTab => {
+      app.feed_tab = match app.feed_tab {
+        FeedTab::Inbox => FeedTab::History,
+        FeedTab::Library => FeedTab::Inbox,
+        FeedTab::Discoveries => FeedTab::Library,
+        FeedTab::History => FeedTab::Discoveries,
+      };
+      app.reset_active_feed_position();
+    }
     KeyCode::Enter => {
       if !app.reader_bottom_details && !app.fulltext_loading {
         let idx = app.reader_feed_popup_selected;
@@ -1910,6 +1919,15 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
           FeedTab::Library => FeedTab::Discoveries,
           FeedTab::Discoveries => FeedTab::History,
           FeedTab::History => FeedTab::Inbox,
+        };
+        app.reset_active_feed_position();
+      }
+      KeyCode::BackTab => {
+        app.feed_tab = match app.feed_tab {
+          FeedTab::Inbox => FeedTab::History,
+          FeedTab::Library => FeedTab::Inbox,
+          FeedTab::Discoveries => FeedTab::Library,
+          FeedTab::History => FeedTab::Discoveries,
         };
         app.reset_active_feed_position();
       }

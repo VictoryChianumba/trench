@@ -20,7 +20,7 @@ use std::collections::HashSet;
 
 pub const RIGHT_COL_WIDTH: u16 = 50;
 
-const VERSION: &str = "v0.1.x";
+const VERSION: &str = "v0.1.0";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
   let t_total = std::time::Instant::now();
@@ -4344,7 +4344,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     &[
       ("j / k", "Move down / up"),
       ("g / G", "Jump to top / bottom"),
-      ("Tab", "Cycle: Inbox → Library → Discoveries → History"),
+      ("Tab / Shift+Tab", "Cycle tabs forward / backward"),
       ("Enter", "Open paper in reader"),
       ("Space", "Show abstract/details"),
       ("/", "Search items by title/author"),
