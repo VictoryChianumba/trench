@@ -15,6 +15,14 @@ pub fn dispatch_slash_command(app: &mut App, cmd: SlashCommandInvocation) {
         crate::workflows::discover::start(app, topic);
       }
     }
+    SlashCommandInvocation::ClearHistory => {
+      app.history.clear();
+      app.history_selected_index = 0;
+      app.history_list_offset = 0;
+      crate::store::history::save(&app.history);
+      app.push_chat_assistant_message("Cleared activity history.".to_string());
+      app.status_message = Some("Cleared history".to_string());
+    }
     SlashCommandInvocation::ClearDiscoveries => {
       app.discovery_items.clear();
       app.invalidate_visible_cache();
@@ -101,6 +109,45 @@ pub fn dispatch_slash_command(app: &mut App, cmd: SlashCommandInvocation) {
       app.push_chat_assistant_message(
         "/watch is coming soon. It will monitor a topic over time and surface new results on each launch.".to_string(),
       );
+    }
+    SlashCommandInvocation::ExportHistory { format } => {
+      let Some(fmt) = crate::export::ExportFormat::from_arg(&format) else {
+        app.push_chat_assistant_message(
+          "Usage: /export-history [md|jsonl]".to_string(),
+        );
+        return;
+      };
+      let entries = app.filtered_history();
+      match crate::export::export_history(&entries, fmt) {
+        Ok(path) => {
+          let msg = format!("Exported {} entries to {}", entries.len(), path.display());
+          app.push_chat_assistant_message(msg.clone());
+          app.status_message = Some(msg);
+        }
+        Err(e) => {
+          app.push_chat_assistant_message(format!("Export failed: {e}"));
+        }
+      }
+    }
+    SlashCommandInvocation::ExportLibrary { format } => {
+      let Some(fmt) = crate::export::ExportFormat::from_arg(&format) else {
+        app.push_chat_assistant_message(
+          "Usage: /export-library [md|jsonl]".to_string(),
+        );
+        return;
+      };
+      let label = app.library_filter.label().to_string();
+      let items = app.visible_items();
+      match crate::export::export_library(&items, &label, fmt) {
+        Ok(path) => {
+          let msg = format!("Exported {} items to {}", items.len(), path.display());
+          app.push_chat_assistant_message(msg.clone());
+          app.status_message = Some(msg);
+        }
+        Err(e) => {
+          app.push_chat_assistant_message(format!("Export failed: {e}"));
+        }
+      }
     }
     SlashCommandInvocation::Unknown { raw } => {
       app.push_chat_assistant_message(format!("Unknown slash command: {raw}"));

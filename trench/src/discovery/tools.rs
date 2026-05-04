@@ -51,20 +51,6 @@ pub fn all_tool_defs(config: &Config) -> Vec<ToolDef> {
         "required": ["arxiv_id"]
       }),
     },
-    ToolDef {
-      name: "search_papers_with_code",
-      description: "Search Papers With Code for papers that have associated code repositories. Good for implementation queries.",
-      schema: json!({
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "description": "Search query"
-          }
-        },
-        "required": ["query"]
-      }),
-    },
   ];
 
   if config.perplexity_api_key.as_deref().map(|k| !k.trim().is_empty()).unwrap_or(false) {
@@ -91,7 +77,6 @@ pub fn execute(name: &str, input: &Value, config: &Config) -> ToolResult {
   match name {
     "search_arxiv" => exec_search_arxiv(input),
     "fetch_arxiv_paper" => exec_fetch_arxiv_paper(input),
-    "search_papers_with_code" => exec_search_pwc(input),
     "search_web" => exec_search_web(input, config),
     _ => ToolResult { items: vec![], text: format!("Unknown tool: {name}") },
   }
@@ -133,25 +118,6 @@ fn exec_fetch_arxiv_paper(input: &Value) -> ToolResult {
       ToolResult { items, text }
     }
     Err(e) => err_result(&format!("arXiv fetch failed: {e}")),
-  }
-}
-
-fn exec_search_pwc(input: &Value) -> ToolResult {
-  let query = match input["query"].as_str() {
-    Some(q) => q,
-    None => return err_result("Missing query"),
-  };
-
-  match crate::ingestion::papers_with_code::search(query) {
-    Ok(items) if items.is_empty() => ToolResult {
-      items: vec![],
-      text: format!("No papers found on Papers With Code for '{query}'"),
-    },
-    Ok(items) => {
-      let text = items_summary(&items, "Papers With Code");
-      ToolResult { items, text }
-    }
-    Err(e) => err_result(&format!("Papers With Code search failed: {e}")),
   }
 }
 

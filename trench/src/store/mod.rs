@@ -1,7 +1,9 @@
 pub mod cache;
 pub mod discovery_cache;
 pub mod enrichment_cache;
+pub mod history;
 pub mod session;
+pub mod tags;
 
 use std::collections::HashMap;
 use std::fs;
@@ -44,7 +46,22 @@ pub fn load() -> HashMap<String, WorkflowState> {
     Err(_) => return HashMap::new(),
   };
 
-  serde_json::from_slice(&bytes).unwrap_or_default()
+  // Tolerant load: parse per-key so unknown variants (e.g. legacy "skimmed")
+  // fall back to Inbox instead of wiping the entire map.
+  let raw: HashMap<String, serde_json::Value> =
+    match serde_json::from_slice(&bytes) {
+      Ok(m) => m,
+      Err(_) => return HashMap::new(),
+    };
+
+  raw
+    .into_iter()
+    .map(|(k, v)| {
+      let state = serde_json::from_value::<WorkflowState>(v)
+        .unwrap_or(WorkflowState::Inbox);
+      (k, state)
+    })
+    .collect()
 }
 
 pub fn save(state: &HashMap<String, WorkflowState>) {

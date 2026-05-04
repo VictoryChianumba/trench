@@ -5,7 +5,6 @@ pub enum SourcePlatform {
   ArXiv,
   Twitter,
   Blog,
-  PapersWithCode,
   Newsletter,
   HuggingFace,
   Rss,
@@ -19,7 +18,6 @@ impl SourcePlatform {
       Self::ArXiv => "arXiv",
       Self::Twitter => "twit",
       Self::Blog => "blog",
-      Self::PapersWithCode => "pwc",
       Self::Newsletter => "news",
       Self::HuggingFace => "hf",
       Self::Rss => "rss",
@@ -77,7 +75,6 @@ impl SignalLevel {
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowState {
   Inbox,
-  Skimmed,
   Queued,
   DeepRead,
   Archived,
@@ -87,7 +84,6 @@ impl WorkflowState {
   pub fn short_label(&self) -> &'static str {
     match self {
       Self::Inbox => "inbox",
-      Self::Skimmed => "skimmed",
       Self::Queued => "queued",
       Self::DeepRead => "read",
       Self::Archived => "archived",
@@ -147,7 +143,6 @@ impl FeedItem {
         }
       }
       SourcePlatform::Blog
-      | SourcePlatform::PapersWithCode
       | SourcePlatform::Twitter
       | SourcePlatform::OpenReview => SignalLevel::Secondary,
       SourcePlatform::Newsletter

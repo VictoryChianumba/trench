@@ -5,6 +5,7 @@ pub enum SlashCommandInvocation {
   ClearChat,
   Discover { topic: String },
   ClearDiscoveries,
+  ClearHistory,
   AddArxivCategory { category: String },
   AddFeed { url: String },
   Sota { topic: String },
@@ -15,6 +16,8 @@ pub enum SlashCommandInvocation {
   Author { name: String },
   Trending { topic: String },
   Watch { topic: String },
+  ExportHistory { format: String },
+  ExportLibrary { format: String },
   Unknown { raw: String },
 }
 
@@ -28,6 +31,9 @@ pub fn parse_slash_command(raw: &str) -> SlashCommandInvocation {
     },
     Some(CommandId::ClearDiscoveries) => {
       SlashCommandInvocation::ClearDiscoveries
+    }
+    Some(CommandId::ClearHistory) => {
+      SlashCommandInvocation::ClearHistory
     }
     Some(CommandId::AddArxivCategory) => {
       SlashCommandInvocation::AddArxivCategory {
@@ -59,6 +65,12 @@ pub fn parse_slash_command(raw: &str) -> SlashCommandInvocation {
     Some(CommandId::Watch) => SlashCommandInvocation::Watch {
       topic: trimmed.strip_prefix("/watch").unwrap_or("").trim().to_string(),
     },
+    Some(CommandId::ExportHistory) => SlashCommandInvocation::ExportHistory {
+      format: trimmed.strip_prefix("/export-history").unwrap_or("").trim().to_string(),
+    },
+    Some(CommandId::ExportLibrary) => SlashCommandInvocation::ExportLibrary {
+      format: trimmed.strip_prefix("/export-library").unwrap_or("").trim().to_string(),
+    },
     None => SlashCommandInvocation::Unknown { raw: trimmed.to_string() },
   }
 }
@@ -66,10 +78,15 @@ pub fn parse_slash_command(raw: &str) -> SlashCommandInvocation {
 fn find_command(
   raw: &str,
 ) -> Option<&'static crate::commands::registry::CommandSpec> {
-  COMMAND_SPECS.iter().find(|spec| {
-    raw == spec.command
-      || raw
-        .strip_prefix(spec.command)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
-  })
+  // Prefer the longest matching command so "/clear history" doesn't accidentally
+  // match the bare "/clear" prefix.
+  COMMAND_SPECS
+    .iter()
+    .filter(|spec| {
+      raw == spec.command
+        || raw
+          .strip_prefix(spec.command)
+          .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+    })
+    .max_by_key(|spec| spec.command.len())
 }

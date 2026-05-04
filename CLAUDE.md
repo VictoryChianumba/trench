@@ -247,18 +247,48 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 
 ### Reader UX
 - [x] Section-jump navigation: `[` prev section, `]` next section
-- [x] Toggleable TOC side panel: `t` — current section tracked and highlighted
+- [x] Toggleable TOC side panel: `\` (backslash) — moved off `t` to make room for vim's `t<char>` find motion
 - [x] Width-aware reflow when TOC toggles (content_width_for helper, rebuild on toggle/resize)
 - [x] Back-navigation stack: `Ctrl+O` to return to previous position after jump
 - [x] Paper metadata header bar — title, authors pinned above content
 - [x] `?` help overlay showing all block-reader keybindings
-- [x] Bookmarks — `m` to toggle, `'` to jump forward; persisted per arXiv ID; amber highlight
+- [x] Bookmarks — `m{a}` set / `'{a}` jump (multi-letter, vim-style); persisted per arXiv ID; amber highlight on bookmarked lines. Legacy anonymous bookmarks auto-migrate to a–z.
 - [x] `PageUp`/`PageDown` full-page scroll; `{`/`}` paragraph jump; `H`/`M`/`L` screen top/mid/bottom; `z` center cursor
 - [x] `*` search word under cursor; `h`/`l` column cursor movement
 - [x] Previous bookmark — `` ` `` cycles bookmarks backward (pairs with `'` forward)
 - [x] `y` yank current line to clipboard via OSC 52
 - [x] Count prefix for motions — `5j`, `10G`, `3]`, etc.; shown in status bar during entry
 - [x] Visual mode — `v` char select, `V` line select; `j`/`k`/`h`/`l` extend; `y` yank selection; `Esc` cancel
+
+### Editor parity — features from cli-text-reader missing in block-reader
+
+The new block-reader (~1.5k LOC) is intentionally smaller than the old cli-text-reader (~13.6k LOC). Items below are tracked so they don't get forgotten; the cheap wins are the ones with most leverage for paper-reading flow.
+
+Cheap wins (~50–150 lines each):
+- [x] Real char cursor inside the line — `Reader.cursor_x` is already a real byte offset; `apply_char_cursor` already paints it
+- [x] Word motions `w` / `b` / `e` / `W` / `B` / `E` — wrap across visual lines (vim-default cross-line behaviour)
+- [x] Backward word-end `ge` / `gE` — via new `Mode::AwaitingG`; also makes `gg` the canonical "go to top" gesture (the bare `g` is now the prefix)
+- [x] Line edges `0` / `$` / `^` — `nav_line_start` / `nav_line_end` / `nav_line_first_nonblank`
+- [x] `h` / `l` wrap to prev/next visual line at edges (modern editor convention; vim's `whichwrap=h,l`)
+- [x] Sentence motion `(` / `)` — buffer-wide; sentence ends at `.`/`!`/`?` + optional `)`/`]`/`"`/`'` + whitespace
+- [x] Last-column memory across `j`/`k` — `Reader.desired_column` field; horizontal motions remember, vertical motions clamp to new line length
+- [x] Find char in line `f` / `F` / `t` / `T` — `Mode::AwaitingChar { kind: FindKind }` + `find_char_in_line`. **TOC moved off `t` to `\` (backslash)** to free the binding
+- [x] `%` matching brace / paren jump — `nav_match_brace`, single-line scope
+- [x] Cursor visible on every text-bearing line kind — `apply_styled_cursor` for `StyledProse`, `apply_inline_cursor` for `Code`/`Quote`, per-char overlay for `MatrixLine`. Previously the cursor was rendered only on `Prose`/`Header`/`ListItem`
+
+Medium (~200–400 lines each):
+- [x] Persistent highlights — character-range, per-paper. `crates/block-reader/src/highlights.rs` stores `Highlight { block_idx, byte_start, byte_end }`; `VisualLine` carries `block_byte_start/end` so highlights survive resize. Bindings: `H` (visual mode → commit selection) / `X` (normal mode → remove at cursor). Storage at `~/.config/trench/highlights_<arxivid>.json`.
+  - [ ] Cross-paper "Highlights feed" view in trench — surface every highlight you've made across all papers as a single browsable list (with paper, position, and surrounding context). Deferred until per-paper highlights have soaked.
+- [ ] Command mode `:` — opens the door to `:set theme=…`, `:bookmark add`, `:export`, `:goto <section>`, etc. Needs a small command-execution security model (we already have one in `cli-text-reader/src/editor/command_execution_security.rs`)
+- [ ] Text objects `diw` / `da{` / `ci"` / `dap` — depend on real char cursor + an operator-pending state machine
+- [x] Multi-letter marks `ma`–`mz` / `'a`–`'z` — `Reader.bookmarks: HashMap<char, usize>`; new `Mode::AwaitingMarkName { for_set }` consumes the next keystroke as the letter. Storage at `~/.config/trench/bookmarks_<id>.json`; legacy anonymous-list files migrate automatically into letters a–z on first load.
+- [ ] Macros `q<reg>` / `@<reg>` (record / replay)
+
+Hard (probably skip unless explicitly needed):
+- [ ] Multi-buffer + splits — port `BufferState` model + split renderer; large layout-state surface
+- [ ] Voice / TTS — gated on ElevenLabs credits per main TODO; voice control wiring already exists in cli-text-reader
+- [ ] Tutorial mode — interactive walkthrough; was a development tool more than a reader feature
+- [ ] Demo mode — recorded keystroke replay; was a development tool
 
 ### Persistence and integration
 - [x] Reading progress persistence per arXiv ID (~/.config/trench/reader_progress.json)
@@ -274,7 +304,7 @@ Status markers: [x] done  [-] in progress / partial  [ ] not started
 - [x] Coloured text — `\textcolor{}` → ratatui fg()
 
 ### Structure and numbering
-- [x] Numbered sections — "1  Introduction", "2.1  Background"
+- [x] Numbered sections — "1  Introduction", "2.1  Background"  *(now wired in both paths via `SectionCounters` in `pandoc_parse.rs`; respects Pandoc's `unnumbered` class for `\section*{}`)*
 - [x] Numbered theorems — "Theorem 1", "Lemma 2"
 - [x] Proof end marker — ∎ at end of proof environments
 - [x] Numbered equations — `(1)`, `(2)` right-justified in display math

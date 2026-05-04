@@ -2,13 +2,17 @@ mod app;
 mod commands;
 mod config;
 mod discovery;
+mod export;
 mod github;
+mod history;
 mod http;
 mod ingestion;
 mod keys;
+mod library;
 mod models;
 mod store;
 mod syntax;
+mod tags;
 pub mod theme;
 mod ui;
 mod workflows;
@@ -96,25 +100,6 @@ fn spawn_fetch(tx: mpsc::Sender<FetchMessage>, config: config::Config) {
     } else {
       log::info!("source huggingface: disabled — skipping");
       let _ = tx.send(FetchMessage::SourceComplete("huggingface".to_string()));
-    }
-
-    if enabled("papers_with_code") {
-      log::info!("source papers_with_code: starting fetch");
-      match ingestion::papers_with_code::fetch() {
-        Ok(items) => {
-          log::info!("source papers_with_code: completed, {} items", items.len());
-          all_items.extend(items.clone());
-          let _ = tx.send(FetchMessage::Items(items));
-          let _ = tx.send(FetchMessage::SourceComplete("papers_with_code".to_string()));
-        }
-        Err(e) => {
-          log::error!("source papers_with_code: failed — {e}");
-          let _ = tx.send(FetchMessage::SourceError("papers_with_code".to_string(), e));
-        }
-      }
-    } else {
-      log::info!("source papers_with_code: disabled — skipping");
-      let _ = tx.send(FetchMessage::SourceComplete("papers_with_code".to_string()));
     }
 
     if enabled("openreview") {
@@ -246,11 +231,6 @@ fn spawn_fetch(tx: mpsc::Sender<FetchMessage>, config: config::Config) {
       }
     }
 
-    log::warn!(
-      "source pwc: disabled — API redirects to huggingface.co (returns HTML, not JSON)"
-    );
-    let _ = tx.send(FetchMessage::SourceComplete("pwc".to_string()));
-
     log::info!(
       "background: {} total items collected across all sources",
       all_items.len()
@@ -265,7 +245,7 @@ fn spawn_fetch(tx: mpsc::Sender<FetchMessage>, config: config::Config) {
     ingestion::huggingface::enrich_with_repos(&mut all_items);
     let with_repo =
       all_items.iter().filter(|i| i.github_repo.is_some()).count();
-    log::debug!(
+    log::info!(
       "ingestion complete: {with_repo}/{} items have github_repo set",
       all_items.len()
     );
@@ -442,7 +422,6 @@ pub(crate) fn do_refresh(app: &mut App) {
   let mut sources = vec![
     "arxiv".to_string(),
     "huggingface".to_string(),
-    "papers_with_code".to_string(),
     "openreview".to_string(),
     "core".to_string(),
     "openai".to_string(),
@@ -450,7 +429,6 @@ pub(crate) fn do_refresh(app: &mut App) {
     "import_ai".to_string(),
     "bair".to_string(),
     "mit_news_ai".to_string(),
-    "pwc".to_string(),
     "enriching".to_string(),
   ];
   for feed in &app.config.sources.custom_feeds {
@@ -498,6 +476,8 @@ pub(crate) fn spawn_ai_discovery(
     discovery::intent::classify(&topic)
   };
   app.discovery_intent = intent;
+
+  app.record_discovery_query(&topic, intent);
 
   let (tx, rx) = mpsc::channel::<discovery::DiscoveryMessage>();
   app.discovery_rx = Some(rx);
@@ -864,7 +844,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut loading_sources = vec![
       "arxiv".to_string(),
       "huggingface".to_string(),
-      "papers_with_code".to_string(),
       "openreview".to_string(),
       "core".to_string(),
       "openai".to_string(),
@@ -872,7 +851,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       "import_ai".to_string(),
       "bair".to_string(),
       "mit_news_ai".to_string(),
-      "pwc".to_string(),
       "enriching".to_string(),
     ];
     for feed in &app.config.sources.custom_feeds {

@@ -234,6 +234,24 @@ fn parse_feed(
             None
           };
 
+          // Scan body (preferred) then summary for a github link. Skip when
+          // multiple distinct candidates appear — likely an aside, not the
+          // post's own release.
+          let body_text = full_content.as_deref().unwrap_or("");
+          let (github_repo, github_owner, github_repo_name) =
+            super::huggingface::extract_unique_github_from_text(body_text)
+              .or_else(|| {
+                super::huggingface::extract_unique_github_from_text(
+                  &summary_short,
+                )
+              })
+              .filter(|r| !super::huggingface::is_anonymous_review_url(r))
+              .map(|repo| {
+                let (o, n) = super::huggingface::parse_github_owner_repo(&repo);
+                (Some(repo), o, n)
+              })
+              .unwrap_or((None, None, None));
+
           let mut item = FeedItem {
             id: url.clone(),
             title: clean_title,
@@ -247,9 +265,9 @@ fn parse_feed(
             workflow_state: WorkflowState::Inbox,
             url: url.clone(),
             upvote_count: 0,
-            github_repo: None,
-            github_owner: None,
-            github_repo_name: None,
+            github_repo,
+            github_owner,
+            github_repo_name,
             benchmark_results: vec![],
             full_content,
             source_name: source_name.to_string(),

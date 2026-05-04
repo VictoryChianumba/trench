@@ -1,10 +1,6 @@
 use std::io::Read;
 use std::time::Duration;
 
-pub fn url_encode(s: &str) -> String {
-  url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
-
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 

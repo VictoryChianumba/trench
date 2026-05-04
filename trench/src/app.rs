@@ -18,6 +18,7 @@ pub struct FilterState {
   pub signals: HashSet<SignalLevel>,
   pub content_types: HashSet<ContentType>,
   pub workflow_states: HashSet<WorkflowState>,
+  pub tags: HashSet<String>,
 }
 
 impl Default for FilterState {
@@ -27,6 +28,7 @@ impl Default for FilterState {
       signals: HashSet::new(),
       content_types: HashSet::new(),
       workflow_states: HashSet::new(),
+      tags: HashSet::new(),
     }
   }
 }
@@ -41,6 +43,7 @@ impl FilterState {
       && self.signals.is_empty()
       && self.content_types.is_empty()
       && self.workflow_states.is_empty()
+      && self.tags.is_empty()
   }
 
   pub fn matches(&self, item: &FeedItem) -> bool {
@@ -63,7 +66,21 @@ impl FilterState {
       + self.signals.len()
       + self.content_types.len()
       + self.workflow_states.len()
+      + self.tags.len()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Quit popup
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuitPopupKind {
+  #[default]
+  QuitApp,
+  QuitWithProgress,
+  QuitWithChat,
+  LeaveReader,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +252,9 @@ pub enum AppView {
 #[derive(PartialEq, Clone, Copy)]
 pub enum FeedTab {
   Inbox,
+  Library,
   Discoveries,
+  History,
 }
 
 /// What action should be taken when Enter is pressed in the repo tree pane.
@@ -246,6 +265,8 @@ pub enum RepoEnterTarget {
 
 pub struct App {
   pub should_quit: bool,
+  pub quit_popup_active: bool,
+  pub quit_popup_kind: QuitPopupKind,
 
   pub items: Vec<FeedItem>,
   pub selected_index: usize,
@@ -273,6 +294,31 @@ pub struct App {
   pub discovery_palette_selected: usize,
   /// Scroll offset for the discovery palette (for when suggestions exceed visible rows).
   pub discovery_palette_scroll: usize,
+  /// Activity log — paper opens and discovery queries.
+  pub history: Vec<crate::history::HistoryEntry>,
+  pub history_filter: crate::history::HistoryFilter,
+  pub history_selected_index: usize,
+  pub history_list_offset: usize,
+  /// Library tab: workflow-state filter chip + per-tab navigation.
+  pub library_filter: crate::library::LibraryFilter,
+  /// Smart filter: time window applied on top of the workflow chip — pulls
+  /// "last opened" timestamps from the history store.
+  pub library_time_filter: crate::history::HistoryFilter,
+  pub library_selected_index: usize,
+  pub library_list_offset: usize,
+  /// Library bulk-select state. `library_visual_mode` enables visual selection;
+  /// the anchor row is captured at activation; selection always covers the
+  /// contiguous range from anchor to current cursor.
+  pub library_visual_mode: bool,
+  pub library_visual_anchor: usize,
+  pub library_selected_urls: HashSet<String>,
+  /// Tag store: URL → list of tag names. Persisted to ~/.config/trench/tags.json.
+  pub item_tags: crate::tags::ItemTags,
+  /// Tag picker popup state.
+  pub tag_picker_active: bool,
+  pub tag_picker_input: String,
+  pub tag_picker_selected: usize,
+  pub tag_picker_target_urls: Vec<String>,
   pub search_query: String,
   pub search_active: bool,
   pub status_message: Option<String>,
@@ -420,25 +466,16 @@ pub struct App {
   visible_cache: RefCell<Option<(FeedTab, Vec<usize>)>>,
 }
 
-// Offsets within the filter panel after the dynamic source rows.
-// Must stay in sync with the order items are rendered in ui/layout.rs.
-const FILTER_SIGNAL_PRIMARY: usize = 0;
-const FILTER_SIGNAL_SECONDARY: usize = 1;
-const FILTER_SIGNAL_TERTIARY: usize = 2;
-const FILTER_CONTENT_PAPER: usize = 3;
-const FILTER_CONTENT_ARTICLE: usize = 4;
-const FILTER_CONTENT_DIGEST: usize = 5;
-const FILTER_WF_INBOX: usize = 6;
-const FILTER_WF_SKIMMED: usize = 7;
-const FILTER_WF_QUEUED: usize = 8;
-const FILTER_WF_DEEPREAD: usize = 9;
-const FILTER_WF_ARCHIVED: usize = 10;
-const FILTER_CLEAR_ALL: usize = 11;
+// Filter panel cursor positions are computed dynamically in
+// `toggle_filter_at_cursor` based on the current source / tag counts. Static
+// offsets aren't used anymore.
 
 impl App {
   pub fn new() -> Self {
     Self {
       should_quit: false,
+      quit_popup_active: false,
+      quit_popup_kind: QuitPopupKind::default(),
       items: Vec::new(),
       selected_index: 0,
       list_offset: 0,
@@ -457,6 +494,22 @@ impl App {
       discovery_forced_intent: None,
       discovery_palette_selected: 0,
       discovery_palette_scroll: 0,
+      history: crate::store::history::load(),
+      history_filter: crate::history::HistoryFilter::default(),
+      history_selected_index: 0,
+      history_list_offset: 0,
+      library_filter: crate::library::LibraryFilter::default(),
+      library_time_filter: crate::history::HistoryFilter::default(),
+      library_selected_index: 0,
+      library_list_offset: 0,
+      library_visual_mode: false,
+      library_visual_anchor: 0,
+      library_selected_urls: HashSet::new(),
+      item_tags: crate::store::tags::load(),
+      tag_picker_active: false,
+      tag_picker_input: String::new(),
+      tag_picker_selected: 0,
+      tag_picker_target_urls: Vec::new(),
       search_query: String::new(),
       search_active: false,
       status_message: None,
@@ -733,6 +786,39 @@ impl App {
       .iter()
       .enumerate()
       .filter(|(_, item)| {
+        // Tab-scoped pre-filter: Inbox shows only Inbox-state items, Library
+        // shows whichever workflow chip is active.
+        match self.feed_tab {
+          FeedTab::Inbox => {
+            if item.workflow_state != WorkflowState::Inbox {
+              return false;
+            }
+          }
+          FeedTab::Library => {
+            if !self.library_filter.matches(item.workflow_state) {
+              return false;
+            }
+            // Smart filter: time-window pre-filter using last-opened from history.
+            if !matches!(
+              self.library_time_filter,
+              crate::history::HistoryFilter::All
+            ) {
+              let now = chrono::Utc::now();
+              let last_opened = self
+                .history
+                .iter()
+                .find(|e| {
+                  e.kind == crate::history::HistoryKind::Paper && e.key == item.url
+                })
+                .map(|e| e.opened_at);
+              match last_opened {
+                Some(t) if self.library_time_filter.matches_time(t, now) => {}
+                _ => return false,
+              }
+            }
+          }
+          _ => {}
+        }
         let key = if item.source_platform
           == crate::models::SourcePlatform::HuggingFace
         {
@@ -751,6 +837,12 @@ impl App {
         {
           return false;
         }
+        if !self.active_filters.tags.is_empty() {
+          let item_tags = crate::tags::for_url(&self.item_tags, &item.url);
+          if !item_tags.iter().any(|t| self.active_filters.tags.contains(t)) {
+            return false;
+          }
+        }
         self.active_filters.matches(item)
       })
       .map(|(i, _)| i)
@@ -766,42 +858,55 @@ impl App {
   pub fn items_for_tab(&self) -> &[FeedItem] {
     match self.feed_tab {
       FeedTab::Inbox => &self.items,
+      FeedTab::Library => &self.items,
       FeedTab::Discoveries => &self.discovery_items,
+      FeedTab::History => &[],
     }
   }
 
   fn items_for_tab_mut(&mut self) -> &mut Vec<FeedItem> {
     match self.feed_tab {
       FeedTab::Inbox => &mut self.items,
+      FeedTab::Library => &mut self.items,
       FeedTab::Discoveries => &mut self.discovery_items,
+      // History doesn't use FeedItem; callers should not dispatch here for this tab.
+      FeedTab::History => &mut self.items,
     }
   }
 
   pub fn active_selected_index(&self) -> usize {
     match self.feed_tab {
       FeedTab::Inbox => self.selected_index,
+      FeedTab::Library => self.library_selected_index,
       FeedTab::Discoveries => self.discovery_selected_index,
+      FeedTab::History => self.history_selected_index,
     }
   }
 
   pub fn active_list_offset(&self) -> usize {
     match self.feed_tab {
       FeedTab::Inbox => self.list_offset,
+      FeedTab::Library => self.library_list_offset,
       FeedTab::Discoveries => self.discovery_list_offset,
+      FeedTab::History => self.history_list_offset,
     }
   }
 
   pub fn set_active_selected_index(&mut self, value: usize) {
     match self.feed_tab {
       FeedTab::Inbox => self.selected_index = value,
+      FeedTab::Library => self.library_selected_index = value,
       FeedTab::Discoveries => self.discovery_selected_index = value,
+      FeedTab::History => self.history_selected_index = value,
     }
   }
 
   pub fn set_active_list_offset(&mut self, value: usize) {
     match self.feed_tab {
       FeedTab::Inbox => self.list_offset = value,
+      FeedTab::Library => self.library_list_offset = value,
       FeedTab::Discoveries => self.discovery_list_offset = value,
+      FeedTab::History => self.history_list_offset = value,
     }
   }
 
@@ -880,6 +985,162 @@ impl App {
 
   pub fn selected_item(&self) -> Option<&FeedItem> {
     self.visible_items().into_iter().nth(self.active_selected_index())
+  }
+
+  /// Update library_selected_urls from anchor/cursor positions in the visible
+  /// item list. Always covers the contiguous range from anchor to cursor.
+  pub fn library_recompute_selection(&mut self) {
+    if !self.library_visual_mode {
+      self.library_selected_urls.clear();
+      return;
+    }
+    let cursor = self.library_selected_index;
+    let anchor = self.library_visual_anchor;
+    let (lo, hi) = if cursor <= anchor { (cursor, anchor) } else { (anchor, cursor) };
+    let visible = self.visible_items();
+    self.library_selected_urls = visible
+      .iter()
+      .enumerate()
+      .filter(|(i, _)| *i >= lo && *i <= hi)
+      .map(|(_, it)| it.url.clone())
+      .collect();
+  }
+
+  pub fn library_exit_visual(&mut self) {
+    self.library_visual_mode = false;
+    self.library_visual_anchor = 0;
+    self.library_selected_urls.clear();
+  }
+
+  /// Apply a workflow-state transition to every selected item. Returns the
+  /// number of items affected.
+  pub fn apply_workflow_to_selection(
+    &mut self,
+    state: crate::models::WorkflowState,
+  ) -> usize {
+    if self.library_selected_urls.is_empty() {
+      return 0;
+    }
+    let urls: Vec<String> = self.library_selected_urls.iter().cloned().collect();
+    let mut count = 0;
+    for url in urls {
+      for item in self.items.iter_mut() {
+        if item.url == url {
+          item.workflow_state = state;
+          self.persisted_states.insert(url.clone(), state);
+          count += 1;
+          break;
+        }
+      }
+    }
+    crate::store::save(&self.persisted_states);
+    self.invalidate_visible_cache();
+    count
+  }
+
+  /// Open the tag picker for a list of target URLs (single item or multi-select).
+  pub fn open_tag_picker(&mut self, target_urls: Vec<String>) {
+    if target_urls.is_empty() {
+      return;
+    }
+    self.tag_picker_target_urls = target_urls;
+    self.tag_picker_input.clear();
+    self.tag_picker_selected = 0;
+    self.tag_picker_active = true;
+  }
+
+  pub fn close_tag_picker(&mut self) {
+    self.tag_picker_active = false;
+    self.tag_picker_input.clear();
+    self.tag_picker_selected = 0;
+    self.tag_picker_target_urls.clear();
+  }
+
+  /// Toggle a tag on every target URL. If any target lacks the tag, add it to all;
+  /// otherwise remove from all (idempotent toggle).
+  pub fn toggle_tag_on_targets(&mut self, tag: &str) {
+    let tag = crate::tags::normalize(tag);
+    if tag.is_empty() {
+      return;
+    }
+    let urls = self.tag_picker_target_urls.clone();
+    let any_missing = urls.iter().any(|url| {
+      !crate::tags::for_url(&self.item_tags, url)
+        .iter()
+        .any(|t| t == &tag)
+    });
+    for url in &urls {
+      if any_missing {
+        crate::tags::add(&mut self.item_tags, url, tag.clone());
+      } else {
+        crate::tags::remove(&mut self.item_tags, url, &tag);
+      }
+    }
+    crate::store::tags::save(&self.item_tags);
+    self.invalidate_visible_cache();
+  }
+
+  pub fn show_quit_popup(&mut self) {
+    let kind = if self.focused_pane == PaneId::Reader && self.reader_active {
+      QuitPopupKind::LeaveReader
+    } else if self.discovery_loading || self.is_loading {
+      QuitPopupKind::QuitWithProgress
+    } else if self.chat_active
+      && self
+        .chat_ui
+        .as_ref()
+        .map_or(false, |c| !c.input.trim().is_empty())
+    {
+      QuitPopupKind::QuitWithChat
+    } else {
+      QuitPopupKind::QuitApp
+    };
+    self.quit_popup_active = true;
+    self.quit_popup_kind = kind;
+  }
+
+  pub fn record_paper_open(&mut self, item: &FeedItem) {
+    let meta = crate::history::HistoryPaperMeta {
+      authors: item.authors.clone(),
+      source_platform: item.source_platform.clone(),
+      published_at: item.published_at.clone(),
+      summary_short: item.summary_short.clone(),
+    };
+    let source = if item.source_name.is_empty() {
+      item.source_platform.short_label().to_string()
+    } else {
+      item.source_name.clone()
+    };
+    crate::history::record_paper(
+      &mut self.history,
+      item.url.clone(),
+      item.title.clone(),
+      source,
+      meta,
+    );
+    crate::store::history::save(&self.history);
+  }
+
+  pub fn record_discovery_query(
+    &mut self,
+    topic: &str,
+    intent: crate::discovery::intent::QueryIntent,
+  ) {
+    crate::history::record_query(&mut self.history, topic.to_string(), intent.label());
+    crate::store::history::save(&self.history);
+  }
+
+  pub fn filtered_history(&self) -> Vec<&crate::history::HistoryEntry> {
+    let now = chrono::Utc::now();
+    let q = self.search_query.to_lowercase();
+    let src_filter = &self.active_filters.sources;
+    self
+      .history
+      .iter()
+      .filter(|e| self.history_filter.matches(e, now))
+      .filter(|e| q.is_empty() || e.title.to_lowercase().contains(&q))
+      .filter(|e| src_filter.is_empty() || src_filter.contains(&e.source))
+      .collect()
   }
 
   pub fn handle_slash_command(&mut self, cmd: String) {
@@ -1422,9 +1683,13 @@ impl App {
     self.filter_cursor = self.filter_cursor.saturating_sub(1);
   }
 
-  /// Total number of selectable rows in the filter panel (dynamic source count + fixed).
+  /// Total number of selectable rows in the filter panel (dynamic source +
+  /// tag counts + fixed sections). Workflow-state filtering moved to the
+  /// Library tab chips, so the panel covers sources, signals, content types,
+  /// tags, and clear-all.
   pub fn filter_total_items(&self) -> usize {
-    self.filter_source_names().len() + 3 + 3 + 5 + 1
+    self.filter_source_names().len() + 3 + 3
+      + crate::tags::all_tags(&self.item_tags).len() + 1
   }
 
   /// Sorted unique source label strings derived from loaded items.
@@ -1451,58 +1716,40 @@ impl App {
   pub fn toggle_filter_at_cursor(&mut self) {
     let source_names = self.filter_source_names();
     let src_count = source_names.len();
+    let tag_names = crate::tags::all_tags(&self.item_tags);
+    let tag_count = tag_names.len();
     let c = self.filter_cursor;
+
+    // Layout: [sources] [3 signals] [3 content types] [tags] [clear-all]
+    let signals_start = src_count;
+    let content_start = signals_start + 3;
+    let tags_start = content_start + 3;
+    let clear_all = tags_start + tag_count;
 
     if c < src_count {
       let name = source_names[c].clone();
       if !self.active_filters.sources.remove(&name) {
         self.active_filters.sources.insert(name);
       }
-    } else {
-      match c - src_count {
-        FILTER_SIGNAL_PRIMARY => {
-          toggle_set(&mut self.active_filters.signals, SignalLevel::Primary)
-        }
-        FILTER_SIGNAL_SECONDARY => {
-          toggle_set(&mut self.active_filters.signals, SignalLevel::Secondary)
-        }
-        FILTER_SIGNAL_TERTIARY => {
-          toggle_set(&mut self.active_filters.signals, SignalLevel::Tertiary)
-        }
-        FILTER_CONTENT_PAPER => {
-          toggle_set(&mut self.active_filters.content_types, ContentType::Paper)
-        }
-        FILTER_CONTENT_ARTICLE => toggle_set(
-          &mut self.active_filters.content_types,
-          ContentType::Article,
-        ),
-        FILTER_CONTENT_DIGEST => toggle_set(
-          &mut self.active_filters.content_types,
-          ContentType::Digest,
-        ),
-        FILTER_WF_INBOX => toggle_set(
-          &mut self.active_filters.workflow_states,
-          WorkflowState::Inbox,
-        ),
-        FILTER_WF_SKIMMED => toggle_set(
-          &mut self.active_filters.workflow_states,
-          WorkflowState::Skimmed,
-        ),
-        FILTER_WF_QUEUED => toggle_set(
-          &mut self.active_filters.workflow_states,
-          WorkflowState::Queued,
-        ),
-        FILTER_WF_DEEPREAD => toggle_set(
-          &mut self.active_filters.workflow_states,
-          WorkflowState::DeepRead,
-        ),
-        FILTER_WF_ARCHIVED => toggle_set(
-          &mut self.active_filters.workflow_states,
-          WorkflowState::Archived,
-        ),
-        FILTER_CLEAR_ALL => self.active_filters = FilterState::new(),
-        _ => {}
+    } else if c < content_start {
+      match c - signals_start {
+        0 => toggle_set(&mut self.active_filters.signals, SignalLevel::Primary),
+        1 => toggle_set(&mut self.active_filters.signals, SignalLevel::Secondary),
+        _ => toggle_set(&mut self.active_filters.signals, SignalLevel::Tertiary),
       }
+    } else if c < tags_start {
+      match c - content_start {
+        0 => toggle_set(&mut self.active_filters.content_types, ContentType::Paper),
+        1 => toggle_set(&mut self.active_filters.content_types, ContentType::Article),
+        _ => toggle_set(&mut self.active_filters.content_types, ContentType::Digest),
+      }
+    } else if c < clear_all {
+      let tag = tag_names[c - tags_start].clone();
+      if !self.active_filters.tags.remove(&tag) {
+        self.active_filters.tags.insert(tag);
+      }
+    } else {
+      self.active_filters = FilterState::new();
     }
     self.reset_active_feed_position();
   }
@@ -1658,7 +1905,7 @@ mod tests {
         summary_short: "Thread covering FA3 throughput numbers versus \
         cuDNN on H100 SXM across sequence lengths."
           .into(),
-        workflow_state: WorkflowState::Skimmed,
+        workflow_state: WorkflowState::Inbox,
         url: "https://twitter.com/tri_dao/status/000001".into(),
         upvote_count: 0,
         github_repo: None,
@@ -1792,7 +2039,7 @@ mod tests {
         summary_short: "v0.5 ships automatic prefix caching and draft-model \
         speculative decoding, cutting median TTFT by 40%."
           .into(),
-        workflow_state: WorkflowState::Skimmed,
+        workflow_state: WorkflowState::Inbox,
         url: "https://github.com/vllm-project/vllm/releases/v0.5".into(),
         upvote_count: 0,
         github_repo: None,
@@ -1927,7 +2174,7 @@ mod tests {
         summary_short: "Unified fine-tuning framework supporting LoRA, QLoRA, \
         full-param and FSDP across multiple model families."
           .into(),
-        workflow_state: WorkflowState::Skimmed,
+        workflow_state: WorkflowState::Inbox,
         url: "https://github.com/OpenAccess-AI-Collective/axolotl".into(),
         upvote_count: 0,
         github_repo: None,

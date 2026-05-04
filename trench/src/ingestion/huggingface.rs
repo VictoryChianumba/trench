@@ -484,7 +484,7 @@ pub fn enrich_with_repos(items: &mut Vec<FeedItem>) {
     }
   }
 
-  log::debug!(
+  log::info!(
     "repo enrichment: {enriched}/{attempted} items enriched with github_repo"
   );
   save_hf_cache(&cache);
@@ -497,34 +497,63 @@ fn apply_repo(items: &mut Vec<FeedItem>, idx: usize, repo: &str) {
   items[idx].github_repo_name = name;
 }
 
-/// Return the arXiv ID for items whose `id` field looks like one (`NNNN.NNNNN`).
+/// Return the arXiv ID for any item whose `id` or `url` references one.
+/// Delegates to `arxiv::normalize_arxiv_id` so that bare IDs (HF), full Atom
+/// URLs (arXiv), and arxiv-flavoured OpenReview URLs all resolve to the same
+/// canonical form.
 fn extract_paper_arxiv_id(item: &FeedItem) -> Option<String> {
-  let id = &item.id;
-  let dot = id.find('.')?;
-  let before = &id[..dot];
-  let after = &id[dot + 1..];
-  if before.len() == 4
-    && after.len() >= 4
-    && before.chars().all(|c| c.is_ascii_digit())
-    && after.chars().all(|c| c.is_ascii_digit())
-  {
-    Some(id.clone())
-  } else {
-    None
-  }
+  super::arxiv::normalize_arxiv_id(&item.id)
+    .or_else(|| super::arxiv::normalize_arxiv_id(&item.url))
 }
 
-fn extract_github_from_text(text: &str) -> Option<String> {
+fn github_url_re() -> &'static regex::Regex {
   use std::sync::OnceLock;
   static RE: OnceLock<regex::Regex> = OnceLock::new();
-  let re = RE.get_or_init(|| {
-    regex::Regex::new(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+")
-      .expect("valid regex")
-  });
-  re.find(text).map(|m| m.as_str().trim_end_matches('.').to_string())
+  RE.get_or_init(|| {
+    regex::Regex::new(
+      r"(?:https?://)?(?:www\.)?github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)",
+    )
+    .expect("valid regex")
+  })
 }
 
-fn parse_github_owner_repo(url: &str) -> (Option<String>, Option<String>) {
+fn canonicalise_match(caps: &regex::Captures<'_>) -> Option<String> {
+  let owner = caps.get(1)?.as_str();
+  let repo = caps.get(2)?.as_str().trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
+  let repo = repo.strip_suffix(".git").unwrap_or(repo);
+  if owner.is_empty() || repo.is_empty() {
+    return None;
+  }
+  Some(format!("https://github.com/{owner}/{repo}"))
+}
+
+/// Return the first plausible GitHub repo URL in `text`, normalised to
+/// `https://github.com/owner/repo` form. Accepts protocol-less and `www.`
+/// variants; trims trailing punctuation and balanced wrappers (`)`, `]`, `}`).
+pub(crate) fn extract_github_from_text(text: &str) -> Option<String> {
+  let caps = github_url_re().captures(text)?;
+  canonicalise_match(&caps)
+}
+
+/// Return a GitHub repo URL only if the text mentions exactly one distinct
+/// canonical repo. Used by the RSS body scan, where multiple unrelated
+/// `github.com/...` mentions in a long blog post are likely asides rather than
+/// the post's own release.
+pub(crate) fn extract_unique_github_from_text(text: &str) -> Option<String> {
+  let mut found: Option<String> = None;
+  for caps in github_url_re().captures_iter(text) {
+    if let Some(canonical) = canonicalise_match(&caps) {
+      match &found {
+        None => found = Some(canonical),
+        Some(existing) if existing == &canonical => {} // dup of same repo
+        Some(_) => return None,                         // distinct second hit
+      }
+    }
+  }
+  found
+}
+
+pub(crate) fn parse_github_owner_repo(url: &str) -> (Option<String>, Option<String>) {
   let path = url
     .trim_end_matches('/')
     .strip_prefix("https://github.com/")
@@ -532,8 +561,25 @@ fn parse_github_owner_repo(url: &str) -> (Option<String>, Option<String>) {
     .unwrap_or("");
   let mut parts = path.splitn(2, '/');
   let owner = parts.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
-  let name = parts.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
+  let name = parts
+    .next()
+    .filter(|s| !s.is_empty())
+    .map(|s| s.trim_end_matches('/'))
+    .map(|s| s.strip_suffix(".git").unwrap_or(s).to_string())
+    .filter(|s| !s.is_empty());
   (owner, name)
+}
+
+/// True for github URLs whose owner starts with "anonymous" — these are
+/// double-blind-review placeholders (anonymousforneurips, anonymous-iclr, etc.)
+/// that resolve to dead or empty repos and should not be auto-linked.
+pub(crate) fn is_anonymous_review_url(url: &str) -> bool {
+  let path = url
+    .strip_prefix("https://github.com/")
+    .or_else(|| url.strip_prefix("http://github.com/"))
+    .unwrap_or(url);
+  let owner = path.split('/').next().unwrap_or("");
+  owner.to_ascii_lowercase().starts_with("anonymous")
 }
 
 // ---------------------------------------------------------------------------
@@ -590,4 +636,162 @@ fn hf_cache_stale(entry: &HfRepoCacheEntry) -> bool {
   };
   let today = chrono::Utc::now().date_naive();
   (today - cached).num_days() > CACHE_TTL_DAYS as i64
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::models::{
+    ContentType, FeedItem, SignalLevel, SourcePlatform, WorkflowState,
+  };
+
+  fn item(id: &str, url: &str) -> FeedItem {
+    FeedItem {
+      id: id.to_string(),
+      title: String::new(),
+      source_platform: SourcePlatform::ArXiv,
+      content_type: ContentType::Paper,
+      domain_tags: vec![],
+      signal: SignalLevel::Tertiary,
+      published_at: String::new(),
+      authors: vec![],
+      summary_short: String::new(),
+      workflow_state: WorkflowState::Inbox,
+      url: url.to_string(),
+      upvote_count: 0,
+      github_repo: None,
+      github_owner: None,
+      github_repo_name: None,
+      benchmark_results: vec![],
+      full_content: None,
+      source_name: String::new(),
+    }
+  }
+
+  #[test]
+  fn extract_github_from_text_handles_common_styles() {
+    let cases = [
+      ("Code at https://github.com/foo/bar", Some("https://github.com/foo/bar")),
+      ("Code at github.com/foo/bar", Some("https://github.com/foo/bar")),
+      ("see www.github.com/foo/bar.", Some("https://github.com/foo/bar")),
+      ("(https://github.com/foo/bar).", Some("https://github.com/foo/bar")),
+      ("\\url{https://github.com/foo/bar}", Some("https://github.com/foo/bar")),
+      ("Trailing comma github.com/foo/bar,", Some("https://github.com/foo/bar")),
+      // .git clone-URL suffix must be stripped from the canonical form.
+      ("git clone https://github.com/foo/bar.git", Some("https://github.com/foo/bar")),
+      ("see https://github.com/foo/bar.git/", Some("https://github.com/foo/bar")),
+      ("(https://github.com/foo/bar.git)", Some("https://github.com/foo/bar")),
+      // .gitignore is NOT a .git suffix — must remain intact.
+      (
+        "https://github.com/foo/bar.gitignore",
+        Some("https://github.com/foo/bar.gitignore"),
+      ),
+      ("No code link in this abstract.", None),
+    ];
+    for (input, expected) in cases {
+      assert_eq!(
+        extract_github_from_text(input).as_deref(),
+        expected,
+        "input: {input}",
+      );
+    }
+  }
+
+  #[test]
+  fn parse_github_owner_repo_round_trips() {
+    let (o, n) = parse_github_owner_repo("https://github.com/foo/bar");
+    assert_eq!(o.as_deref(), Some("foo"));
+    assert_eq!(n.as_deref(), Some("bar"));
+
+    // .git suffix on a raw URL should be stripped from the structured name.
+    let (o, n) = parse_github_owner_repo("https://github.com/foo/bar.git");
+    assert_eq!(o.as_deref(), Some("foo"));
+    assert_eq!(n.as_deref(), Some("bar"));
+
+    // Trailing slash after .git also handled.
+    let (o, n) = parse_github_owner_repo("https://github.com/foo/bar.git/");
+    assert_eq!(o.as_deref(), Some("foo"));
+    assert_eq!(n.as_deref(), Some("bar"));
+  }
+
+  #[test]
+  fn is_anonymous_review_url_battery() {
+    // True cases: owner starts with "anonymous" (case-insensitive).
+    assert!(is_anonymous_review_url(
+      "https://github.com/anonymousforneurips64/repo"
+    ));
+    assert!(is_anonymous_review_url(
+      "https://github.com/anonymous-iclr2024/x"
+    ));
+    assert!(is_anonymous_review_url("https://github.com/Anonymous/x"));
+    // Even without the protocol prefix the owner check still works.
+    assert!(is_anonymous_review_url("anonymousfoo/x"));
+
+    // False: only the OWNER segment is checked, not the repo name.
+    assert!(!is_anonymous_review_url(
+      "https://github.com/normalowner/anonymous-repo"
+    ));
+    assert!(!is_anonymous_review_url("https://github.com/foo/bar"));
+    // Embedded "anonymous" in the middle of an owner shouldn't match.
+    assert!(!is_anonymous_review_url(
+      "https://github.com/notanonymousowner/x"
+    ));
+  }
+
+  #[test]
+  fn extract_unique_github_returns_some_only_for_single_distinct() {
+    // Single mention.
+    assert_eq!(
+      extract_unique_github_from_text("Release at github.com/foo/bar.")
+        .as_deref(),
+      Some("https://github.com/foo/bar"),
+    );
+    // Same repo mentioned twice — still unique.
+    assert_eq!(
+      extract_unique_github_from_text(
+        "github.com/foo/bar — see https://github.com/foo/bar"
+      )
+      .as_deref(),
+      Some("https://github.com/foo/bar"),
+    );
+    // Two distinct repos — abstain.
+    assert_eq!(
+      extract_unique_github_from_text(
+        "Compares github.com/foo/bar against github.com/baz/qux"
+      ),
+      None,
+    );
+    // None at all.
+    assert_eq!(extract_unique_github_from_text("plain prose"), None);
+  }
+
+  #[test]
+  fn extract_paper_arxiv_id_accepts_id_or_url() {
+    // Bare ID via id (HF case).
+    assert_eq!(
+      extract_paper_arxiv_id(&item("2312.12345", "https://huggingface.co/papers/2312.12345"))
+        .as_deref(),
+      Some("2312.12345"),
+    );
+    // Full Atom URL via id (arXiv case).
+    assert_eq!(
+      extract_paper_arxiv_id(&item(
+        "http://arxiv.org/abs/2312.12345v1",
+        "http://arxiv.org/abs/2312.12345v1"
+      ))
+      .as_deref(),
+      Some("2312.12345"),
+    );
+    // OpenReview-shaped id but arxiv URL.
+    assert_eq!(
+      extract_paper_arxiv_id(&item(
+        "https://openreview.net/forum?id=abcdef",
+        "https://arxiv.org/abs/2401.99999"
+      ))
+      .as_deref(),
+      Some("2401.99999"),
+    );
+    // Garbage in both fields.
+    assert_eq!(extract_paper_arxiv_id(&item("nope", "also nope")), None);
+  }
 }

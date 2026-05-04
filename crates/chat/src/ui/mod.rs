@@ -546,37 +546,26 @@ impl ChatUi {
       sep_area,
     );
 
-    // ── Header ────────────────────────────────────────────────────
-    // "── chat ─── <model> · <provider> │ <session title> ──"
+    // ── Header: "── session title ── model · provider ──"
     let session_title = self
       .active_session
       .as_ref()
       .map(|s| s.title.clone())
-      .unwrap_or_else(|| "new session".to_string());
+      .unwrap_or_else(|| "chat".to_string());
 
-    let prefix = "── chat ─── ";
-    let mdp = format!("{model_name} · {provider_name}");
-    let title_part = format!(" │ {session_title} ");
-    let (mode_label, mode_color) = match self.input_mode {
-      ChatInputMode::Insert => (" -- INSERT --", t.success),
-      ChatInputMode::Normal => (" -- NORMAL --", t.warning),
-    };
-    let used =
-      prefix.len() + mdp.len() + title_part.len() + mode_label.len() + 2;
+    let model_provider = format!("{model_name} · {provider_name}");
+    let used = 4 + session_title.len() + 4 + model_provider.len() + 2;
     let fill = (area.width as usize).saturating_sub(used);
 
     let header_line = Line::from(vec![
-      Span::styled(prefix.to_string(), Style::default().fg(t.border)),
+      Span::styled("── ", Style::default().fg(t.border)),
       Span::styled(
-        mdp,
-        Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        session_title,
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
       ),
-      Span::styled(title_part, Style::default().fg(t.text_dim)),
+      Span::styled(" ── ", Style::default().fg(t.border)),
+      Span::styled(model_provider, Style::default().fg(t.text_dim)),
       Span::styled("─".repeat(fill), Style::default().fg(t.border)),
-      Span::styled(
-        mode_label.to_string(),
-        Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
-      ),
     ]);
     frame.render_widget(
       Paragraph::new(header_line).style(Style::default().bg(t.bg_chat)),
@@ -618,33 +607,47 @@ impl ChatUi {
 
     // ── Input bar ─────────────────────────────────────────────────
     let input_bg = t.bg_input;
+    // Stripe color signals mode: accent = insert (ready to type), dim = normal/loading.
+    let stripe_color = if self.is_loading || self.input_mode == ChatInputMode::Normal {
+      t.text_dim
+    } else {
+      t.accent
+    };
+    let stripe = Span::styled("│ ", Style::default().fg(stripe_color).bg(input_bg));
+
     let input_line = if self.is_loading {
       let dots_idx = ((self.frame_count / 8) as usize) % 4;
       let dots = ["·", "··", "···", "··"][dots_idx];
-      Line::from(Span::styled(
-        dots.to_string(),
-        Style::default().fg(t.text_dim).bg(input_bg),
-      ))
+      Line::from(vec![
+        stripe,
+        Span::styled(dots.to_string(), Style::default().fg(t.text_dim).bg(input_bg)),
+      ])
     } else if self.input_mode == ChatInputMode::Normal {
       let text = if self.input.is_empty() {
-        "Type your message or /help for commands".to_string()
+        "press i to type  ·  j/k to scroll".to_string()
       } else {
         self.input.clone()
       };
-      Line::from(Span::styled(
-        text,
-        Style::default().fg(t.text_dim).bg(input_bg),
-      ))
+      Line::from(vec![
+        stripe,
+        Span::styled(text, Style::default().fg(t.text_dim).bg(input_bg)),
+      ])
     } else if self.input.is_empty() {
-      Line::from(Span::styled(
-        "Type your message or /help for commands",
-        Style::default().fg(t.text_dim).bg(input_bg),
-      ))
+      Line::from(vec![
+        stripe,
+        Span::styled(
+          "Type your message or / for commands",
+          Style::default().fg(t.text_dim).bg(input_bg),
+        ),
+      ])
     } else {
-      Line::from(Span::styled(
-        format!("{}█", self.input),
-        Style::default().fg(t.text).bg(input_bg),
-      ))
+      Line::from(vec![
+        stripe,
+        Span::styled(
+          format!("{}█", self.input),
+          Style::default().fg(t.text).bg(input_bg),
+        ),
+      ])
     };
     frame.render_widget(
       Paragraph::new(input_line).style(Style::default().bg(input_bg)),
@@ -1141,29 +1144,40 @@ impl ChatUi {
         Role::System => continue,
 
         Role::User => {
-          let user_bg = Style::default().fg(t.text).bg(t.bg_user_msg);
+          let text_style = Style::default().fg(t.text).bg(t.bg_user_msg);
+          let stripe_style = Style::default().fg(t.accent).bg(t.bg_user_msg);
+          let indent_style = Style::default().fg(t.text_dim).bg(t.bg_user_msg);
           let content = if msg.content.is_empty() {
             " ".to_string()
           } else {
             msg.content.clone()
           };
+          let inner_width = wrap_width.saturating_sub(2).max(1);
+          let mut msg_first = true;
           for source_line in content.lines() {
             if source_line.is_empty() {
-              lines.push(Line::from(Span::styled(
-                " ".repeat(wrap_width),
-                user_bg,
-              )));
+              let stripe = if msg_first {
+                Span::styled("▌ ", stripe_style)
+              } else {
+                Span::styled("  ", indent_style)
+              };
+              lines.push(Line::from(vec![
+                stripe,
+                Span::styled(" ".repeat(inner_width), text_style),
+              ]));
+              msg_first = false;
             } else {
-              for wrapped in
-                textwrap::wrap(source_line, wrap_width.saturating_sub(1).max(1))
-              {
-                // 1-space left padding; fill rest to full width
-                let padded = format!(
-                  " {:<width$}",
-                  wrapped,
-                  width = wrap_width.saturating_sub(1)
-                );
-                lines.push(Line::from(Span::styled(padded, user_bg)));
+              for wrapped in textwrap::wrap(source_line, inner_width) {
+                let stripe = if msg_first {
+                  Span::styled("▌ ", stripe_style)
+                } else {
+                  Span::styled("  ", indent_style)
+                };
+                lines.push(Line::from(vec![
+                  stripe,
+                  Span::styled(wrapped.to_string(), text_style),
+                ]));
+                msg_first = false;
               }
             }
           }
@@ -1189,6 +1203,12 @@ impl ChatUi {
             if source_line.trim().is_empty() {
               lines.push(Line::from(""));
             } else if let Some(rest) = source_line.strip_prefix("## ") {
+              // Blank line before H2 to open up sections visually.
+              if lines.last().map_or(false, |l| {
+                l.spans.iter().any(|s| !s.content.trim().is_empty())
+              }) {
+                lines.push(Line::from(""));
+              }
               // H2 — accent color + bold, no indent
               let h_style = Style::default()
                 .fg(t.accent)

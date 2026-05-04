@@ -23,7 +23,7 @@ pub fn draw_repo_viewer(frame: &mut Frame, app: &mut App) {
     ])
     .split(area);
 
-  let t = app.active_theme.theme();
+  let t = app.theme();
   draw_header(frame, app, rows[0], &t);
   draw_main(frame, app, rows[1], &t);
   draw_help(frame, app, rows[2], &t);

@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use crate::app::{
   App, AppView, CustomThemeEditorMode, CustomThemeEditorState,
   DiscoverResult, FeedTab, FocusedReader, NavDirection, NotesTab, PaneId,
-  RepoContext, RepoPane, SourcesDetectState,
+  QuitPopupKind, RepoContext, RepoPane, SourcesDetectState,
 };
 use crate::config::{self, CustomThemeConfig, CUSTOM_THEME_ROLES};
 use crate::models::WorkflowState;
@@ -18,6 +18,44 @@ use super::{
 
 /// Top-level key dispatcher — called once per key press event from the main loop.
 pub fn dispatch(key: KeyEvent, app: &mut App) {
+  // Tag picker popup — intercepts all keys when open.
+  if app.tag_picker_active {
+    handle_tag_picker(key, app);
+    return;
+  }
+
+  // Quit popup — intercepts all keys until dismissed.
+  if app.quit_popup_active {
+    match key.code {
+      KeyCode::Char('q') | KeyCode::Enter => {
+        app.quit_popup_active = false;
+        match app.quit_popup_kind {
+          QuitPopupKind::LeaveReader => {
+            let pane_empty = app.reader_close_active_tab();
+            if pane_empty {
+              if app.reader_dual_active {
+                app.reader_dual_active = false;
+                app.reader_bottom_open = false;
+                app.reader_bottom_focused = false;
+                app.reader_secondary_tabs.clear();
+                app.reader_secondary_active_tab = 0;
+              } else if app.reader_split_active {
+                app.reader_split_active = false;
+              }
+              app.focused_pane = PaneId::Feed;
+            }
+          }
+          _ => app.should_quit = true,
+        }
+      }
+      KeyCode::Esc => {
+        app.quit_popup_active = false;
+      }
+      _ => {}
+    }
+    return;
+  }
+
   // Abstract popup — any of Space / Enter / Esc dismisses.
   if app.abstract_popup_active {
     if matches!(key.code, KeyCode::Char(' ') | KeyCode::Esc | KeyCode::Enter) {
@@ -154,8 +192,10 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
     }
     KeyCode::Tab => {
       app.feed_tab = match app.feed_tab {
-        FeedTab::Inbox => FeedTab::Discoveries,
-        FeedTab::Discoveries => FeedTab::Inbox,
+        FeedTab::Inbox => FeedTab::Library,
+        FeedTab::Library => FeedTab::Discoveries,
+        FeedTab::Discoveries => FeedTab::History,
+        FeedTab::History => FeedTab::Inbox,
       };
       app.reset_active_feed_position();
     }
@@ -174,6 +214,7 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
           } else {
             item.source_name.clone()
           });
+          app.record_paper_open(&item);
           app.set_notification(format!(
             "Fetching: {}…",
             truncate_for_notif(&item.title, 40)
@@ -405,6 +446,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
           } else {
             item.source_name.clone()
           });
+          app.record_paper_open(&item);
           app.set_notification(format!(
             "Fetching: {}…",
             truncate_for_notif(&item.title, 40)
@@ -413,8 +455,8 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         }
       }
     }
-    // A2 — three-state split cycle / bottom pane toggle
-    KeyCode::Char('v') => {
+    // A2 — three-state reader/feed cycle.
+    KeyCode::Char('f') => {
       if app.reader_dual_active {
         // State 3: toggle bottom feed pane.
         if app.reader_bottom_open {
@@ -447,6 +489,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
             } else {
               item.source_name.clone()
             });
+            app.record_paper_open(&item);
             app.set_notification(format!(
               "Loading: {}…",
               truncate_for_notif(&item.title, 40)
@@ -467,7 +510,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       app.help_scroll = 0;
     }
     KeyCode::Char('q') => {
-      app.should_quit = true;
+      app.show_quit_popup();
     }
     KeyCode::Char('h') => {
       let t = std::time::Instant::now();
@@ -679,6 +722,7 @@ fn trigger_fulltext_new_tab(app: &mut App) {
     } else {
       item.source_name.clone()
     });
+    app.record_paper_open(&item);
     app.set_notification(format!(
       "Fetching: {}…",
       truncate_for_notif(&item.title, 40)
@@ -1727,6 +1771,21 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
     }
   }
 
+  // History tab — handle filter cycling, navigation, reopen, delete.
+  if app.feed_tab == FeedTab::History {
+    if handle_history_tab(key, app) {
+      return;
+    }
+  }
+
+  // Library tab — handle workflow-state chip cycling. Other keys (j/k, Enter,
+  // i/r/w/x, etc.) fall through to the generic feed handler below.
+  if app.feed_tab == FeedTab::Library {
+    if handle_library_tab(key, app) {
+      return;
+    }
+  }
+
   if app.search_active {
     match key.code {
       KeyCode::Esc => {
@@ -1829,6 +1888,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
               } else {
                 item.source_name.clone()
               });
+              app.record_paper_open(&item);
               app.set_notification(format!(
                 "Fetching: {}…",
                 truncate_for_notif(&item.title, 40)
@@ -1846,15 +1906,17 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
     match key.code {
       KeyCode::Tab => {
         app.feed_tab = match app.feed_tab {
-          FeedTab::Inbox => FeedTab::Discoveries,
-          FeedTab::Discoveries => FeedTab::Inbox,
+          FeedTab::Inbox => FeedTab::Library,
+          FeedTab::Library => FeedTab::Discoveries,
+          FeedTab::Discoveries => FeedTab::History,
+          FeedTab::History => FeedTab::Inbox,
         };
         app.reset_active_feed_position();
       }
       KeyCode::Char('f') => {
         app.filter_focus = true;
       }
-      KeyCode::Char('q') => app.should_quit = true,
+      KeyCode::Char('q') => app.show_quit_popup(),
       KeyCode::Esc => {
         app.clear_notification();
         app.status_message = None;
@@ -1894,6 +1956,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
             } else {
               item.source_name.clone()
             });
+            app.record_paper_open(&item);
             {
               log::debug!(
                 "feed Enter: spawning fulltext fetch for url={}",
@@ -1922,7 +1985,6 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
         app.reset_active_feed_position();
       }
       KeyCode::Char('i') => app.set_workflow_state(WorkflowState::Inbox),
-      KeyCode::Char('s') => app.set_workflow_state(WorkflowState::Skimmed),
       KeyCode::Char('r') => app.set_workflow_state(WorkflowState::DeepRead),
       KeyCode::Char('w') => app.set_workflow_state(WorkflowState::Queued),
       KeyCode::Char('x') => app.set_workflow_state(WorkflowState::Archived),
@@ -2011,6 +2073,291 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       }
       _ => {}
     }
+  }
+}
+
+// ── Tag picker handler ────────────────────────────────────────────────────────
+
+fn handle_tag_picker(key: KeyEvent, app: &mut App) {
+  let all = crate::tags::all_tags(&app.item_tags);
+  match key.code {
+    KeyCode::Esc => {
+      app.close_tag_picker();
+    }
+    KeyCode::Enter => {
+      let trimmed = app.tag_picker_input.trim().to_string();
+      if !trimmed.is_empty() {
+        app.toggle_tag_on_targets(&trimmed);
+        app.tag_picker_input.clear();
+      } else if let Some(tag) = all.get(app.tag_picker_selected) {
+        let tag = tag.clone();
+        app.toggle_tag_on_targets(&tag);
+      }
+    }
+    KeyCode::Char(' ') => {
+      if let Some(tag) = all.get(app.tag_picker_selected) {
+        let tag = tag.clone();
+        app.toggle_tag_on_targets(&tag);
+      }
+    }
+    KeyCode::Up => {
+      app.tag_picker_selected = app.tag_picker_selected.saturating_sub(1);
+    }
+    KeyCode::Down => {
+      if !all.is_empty() {
+        app.tag_picker_selected =
+          (app.tag_picker_selected + 1).min(all.len() - 1);
+      }
+    }
+    KeyCode::Backspace => {
+      app.tag_picker_input.pop();
+    }
+    KeyCode::Char(c) => {
+      app.tag_picker_input.push(c);
+    }
+    _ => {}
+  }
+}
+
+// ── Library tab handler ───────────────────────────────────────────────────────
+
+/// Returns true if the key was consumed by the Library tab (chip cycling).
+/// Anything else falls through to the generic feed handler so navigation,
+/// Enter, and `i/r/w/x` state transitions work as usual.
+fn handle_library_tab(key: KeyEvent, app: &mut App) -> bool {
+  use crate::models::WorkflowState;
+
+  // Visual-mode-only handlers fire before the generic chip ones so j/k extend
+  // selection rather than just moving the cursor.
+  if app.library_visual_mode {
+    match key.code {
+      KeyCode::Esc => {
+        app.library_exit_visual();
+        return true;
+      }
+      KeyCode::Char('j') | KeyCode::Down => {
+        let len = app.visible_items().len();
+        if len > 0 {
+          let next = (app.library_selected_index + 1).min(len - 1);
+          app.library_selected_index = next;
+          app.library_recompute_selection();
+        }
+        return true;
+      }
+      KeyCode::Char('k') | KeyCode::Up => {
+        app.library_selected_index = app.library_selected_index.saturating_sub(1);
+        app.library_recompute_selection();
+        return true;
+      }
+      KeyCode::Char('r') => {
+        let n = app.apply_workflow_to_selection(WorkflowState::DeepRead);
+        app.library_exit_visual();
+        app.set_notification(format!("Marked {n} as read"));
+        return true;
+      }
+      KeyCode::Char('w') => {
+        let n = app.apply_workflow_to_selection(WorkflowState::Queued);
+        app.library_exit_visual();
+        app.set_notification(format!("Queued {n} items"));
+        return true;
+      }
+      KeyCode::Char('x') => {
+        let n = app.apply_workflow_to_selection(WorkflowState::Archived);
+        app.library_exit_visual();
+        app.set_notification(format!("Archived {n} items"));
+        return true;
+      }
+      KeyCode::Char('i') => {
+        let n = app.apply_workflow_to_selection(WorkflowState::Inbox);
+        app.library_exit_visual();
+        app.set_notification(format!("Moved {n} back to Inbox"));
+        return true;
+      }
+      KeyCode::Char('t') => {
+        let urls: Vec<String> =
+          app.library_selected_urls.iter().cloned().collect();
+        app.open_tag_picker(urls);
+        return true;
+      }
+      _ => {}
+    }
+    // Block any other key while in visual mode so the generic feed handler
+    // doesn't double-fire (e.g. don't open filter panel via `f` mid-selection).
+    return true;
+  }
+
+  match key.code {
+    KeyCode::Char(']') => {
+      app.library_filter = app.library_filter.next();
+      app.library_selected_index = 0;
+      app.library_list_offset = 0;
+      app.invalidate_visible_cache();
+      true
+    }
+    KeyCode::Char('[') => {
+      app.library_filter = app.library_filter.prev();
+      app.library_selected_index = 0;
+      app.library_list_offset = 0;
+      app.invalidate_visible_cache();
+      true
+    }
+    KeyCode::Char('}') => {
+      app.library_time_filter = app.library_time_filter.next();
+      app.library_selected_index = 0;
+      app.library_list_offset = 0;
+      app.invalidate_visible_cache();
+      true
+    }
+    KeyCode::Char('{') => {
+      app.library_time_filter = app.library_time_filter.prev();
+      app.library_selected_index = 0;
+      app.library_list_offset = 0;
+      app.invalidate_visible_cache();
+      true
+    }
+    KeyCode::Char('v') => {
+      app.library_visual_mode = true;
+      app.library_visual_anchor = app.library_selected_index;
+      app.library_recompute_selection();
+      true
+    }
+    KeyCode::Char('t') => {
+      if let Some(item) = app.selected_item().cloned() {
+        app.open_tag_picker(vec![item.url]);
+      }
+      true
+    }
+    _ => false,
+  }
+}
+
+// ── History tab handler ───────────────────────────────────────────────────────
+
+/// Returns true if the key was handled by the History tab and the caller should
+/// stop propagation. False means fall through to the generic feed handler.
+fn handle_history_tab(key: KeyEvent, app: &mut App) -> bool {
+  use crate::history::{HistoryFilter, HistoryKind};
+  match key.code {
+    KeyCode::Char(']') => {
+      app.history_filter = app.history_filter.next();
+      app.history_selected_index = 0;
+      app.history_list_offset = 0;
+      true
+    }
+    KeyCode::Char('[') => {
+      app.history_filter = app.history_filter.prev();
+      app.history_selected_index = 0;
+      app.history_list_offset = 0;
+      true
+    }
+    KeyCode::Char('j') | KeyCode::Down => {
+      let len = app.filtered_history().len();
+      if len > 0 {
+        let next = (app.history_selected_index + 1).min(len - 1);
+        app.history_selected_index = next;
+      }
+      true
+    }
+    KeyCode::Char('k') | KeyCode::Up => {
+      app.history_selected_index = app.history_selected_index.saturating_sub(1);
+      true
+    }
+    KeyCode::Char('g') => {
+      app.history_selected_index = 0;
+      true
+    }
+    KeyCode::Char('G') => {
+      let len = app.filtered_history().len();
+      if len > 0 {
+        app.history_selected_index = len - 1;
+      }
+      true
+    }
+    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+      let visible = app.filtered_history();
+      let Some(target) = visible.get(app.history_selected_index).cloned() else {
+        return true;
+      };
+      let key_to_delete = (target.kind, target.key.clone());
+      app.history.retain(|e| (e.kind, e.key.clone()) != key_to_delete);
+      crate::store::history::save(&app.history);
+      let len = app.filtered_history().len();
+      if len > 0 && app.history_selected_index >= len {
+        app.history_selected_index = len - 1;
+      }
+      true
+    }
+    KeyCode::Enter => {
+      let visible = app.filtered_history();
+      let Some(entry) = visible.get(app.history_selected_index).cloned() else {
+        return true;
+      };
+      match entry.kind {
+        HistoryKind::Paper => {
+          // Reconstruct enough of FeedItem from history meta and reopen.
+          if let Some(meta) = entry.paper_meta.clone() {
+            let item = reconstruct_feed_item(&entry, &meta);
+            app.last_read = Some(item.title.clone());
+            app.last_read_source = Some(if item.source_name.is_empty() {
+              item.source_platform.short_label().to_string()
+            } else {
+              item.source_name.clone()
+            });
+            app.record_paper_open(&item);
+            app.fulltext_loading = true;
+            app.set_notification(format!(
+              "Fetching: {}…",
+              truncate_for_notif(&item.title, 40)
+            ));
+            let (tx, rx) = mpsc::channel();
+            app.fulltext_rx = Some(rx);
+            spawn_fulltext_fetch(item, tx);
+          }
+        }
+        HistoryKind::Query => {
+          let topic = entry.key.clone();
+          let config = app.config.clone();
+          // Re-running a query starts a fresh discovery session.
+          app.discovery_force_new = true;
+          app.feed_tab = FeedTab::Discoveries;
+          app.reset_active_feed_position();
+          spawn_ai_discovery(topic, config, app);
+        }
+      }
+      // Drop the silent unused HistoryFilter import warning.
+      let _ = HistoryFilter::All;
+      true
+    }
+    _ => false,
+  }
+}
+
+fn reconstruct_feed_item(
+  entry: &crate::history::HistoryEntry,
+  meta: &crate::history::HistoryPaperMeta,
+) -> crate::models::FeedItem {
+  use crate::models::{
+    ContentType, FeedItem, SignalLevel, WorkflowState,
+  };
+  FeedItem {
+    id: entry.key.clone(),
+    title: entry.title.clone(),
+    source_platform: meta.source_platform.clone(),
+    content_type: ContentType::Paper,
+    domain_tags: Vec::new(),
+    signal: SignalLevel::Tertiary,
+    published_at: meta.published_at.clone(),
+    authors: meta.authors.clone(),
+    summary_short: meta.summary_short.clone(),
+    workflow_state: WorkflowState::Inbox,
+    url: entry.key.clone(),
+    upvote_count: 0,
+    github_repo: None,
+    github_owner: None,
+    github_repo_name: None,
+    benchmark_results: Vec::new(),
+    full_content: None,
+    source_name: entry.source.clone(),
   }
 }
 

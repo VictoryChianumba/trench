@@ -12,7 +12,7 @@ use ratatui::{
 use super::repo_viewer::draw_repo_viewer;
 use crate::app::{
   App, AppView, DiscoverResult, FeedTab, FocusedReader, NotesTab, PaneId,
-  ReaderTab, SourcesDetectState,
+  QuitPopupKind, ReaderTab, SourcesDetectState,
 };
 use crate::config::{self, CUSTOM_THEME_ROLES};
 use crate::models::{ContentType, SignalLevel, SourcePlatform, WorkflowState};
@@ -47,6 +47,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
   }
   if app.theme_picker_active {
     draw_theme_picker(frame, app);
+  }
+  if app.tag_picker_active {
+    draw_tag_picker(frame, app);
+  }
+  // Quit popup sits above everything — must be last.
+  if app.quit_popup_active {
+    draw_quit_popup(frame, app);
   }
   let total_ms = t_total.elapsed().as_millis();
   if total_ms > 8 {
@@ -181,7 +188,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     draw_reader_popup(frame, app, area);
   }
 
-  // A2 State 3 — bottom pane visible only when summoned (Ldr+v).
+  // A2 State 3 — bottom pane visible only when summoned (Ldr+f).
   if app.reader_dual_active && app.reader_bottom_open {
     draw_reader_bottom_pane(frame, app, area);
   }
@@ -211,26 +218,30 @@ fn draw_compact_title_bar(frame: &mut Frame, app: &App, area: Rect) {
     .split(area);
 
   let width = area.width as usize;
-  let queued = app
+  let inbox_count = app
     .items
     .iter()
-    .filter(|i| i.workflow_state == WorkflowState::Queued)
+    .filter(|i| i.workflow_state == WorkflowState::Inbox)
     .count();
-  let read = app
+  let library_count = app
     .items
     .iter()
-    .filter(|i| i.workflow_state == WorkflowState::DeepRead)
+    .filter(|i| i.workflow_state != WorkflowState::Inbox)
     .count();
   let total = app.items.len();
   let active_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
   let inactive_style = Style::default().fg(t.text_dim);
   let inbox_style =
     if app.feed_tab == FeedTab::Inbox { active_style } else { inactive_style };
+  let library_style =
+    if app.feed_tab == FeedTab::Library { active_style } else { inactive_style };
   let discoveries_style = if app.feed_tab == FeedTab::Discoveries {
     active_style
   } else {
     inactive_style
   };
+  let history_style =
+    if app.feed_tab == FeedTab::History { active_style } else { inactive_style };
   const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let discovery_spin = if app.discovery_loading {
     format!(" {}", SPINNER[app.spinner_frame % SPINNER.len()])
@@ -243,10 +254,10 @@ fn draw_compact_title_bar(frame: &mut Frame, app: &App, area: Rect) {
     "▀▀▀ ▀  ▀ ▀▀  ▀ ▀ ▀▀ ▀▀ ▀▀ ▀ ▀ ▀ ▀ ▀ ▀",
   ];
   let nav_text = format!(
-    "Inbox {}  Discoveries {}{}  Queue {queued}  Read {read}  Total {total}",
-    app.items.len(),
+    "Inbox {inbox_count}  Library {library_count}  Discoveries {}{}  History {}  Total {total}",
     app.discovery_items.len(),
-    discovery_spin
+    discovery_spin,
+    app.history.len(),
   );
   let logo_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
   let logo_width =
@@ -264,16 +275,16 @@ fn draw_compact_title_bar(frame: &mut Frame, app: &App, area: Rect) {
     Span::styled(WORDMARK[1], logo_style),
     Span::raw(" ".repeat(logo_gap)),
     Span::styled("Inbox ", inbox_style),
-    Span::styled(app.items.len().to_string(), inbox_style),
+    Span::styled(inbox_count.to_string(), inbox_style),
+    Span::styled("  Library ", library_style),
+    Span::styled(library_count.to_string(), library_style),
     Span::styled("  Discoveries ", discoveries_style),
     Span::styled(
       format!("{}{}", app.discovery_items.len(), discovery_spin),
       discoveries_style,
     ),
-    Span::styled("  Queue ", inactive_style),
-    Span::styled(queued.to_string(), inactive_style),
-    Span::styled("  Read ", inactive_style),
-    Span::styled(read.to_string(), inactive_style),
+    Span::styled("  History ", history_style),
+    Span::styled(app.history.len().to_string(), history_style),
     Span::styled("  Total ", inactive_style),
     Span::styled(total.to_string(), inactive_style),
     Span::raw(" ".repeat(version_gap)),
@@ -347,7 +358,6 @@ fn filter_summary(app: &App) -> String {
       &f.workflow_states,
       &[
         (WorkflowState::Inbox, "inbox"),
-        (WorkflowState::Skimmed, "skimmed"),
         (WorkflowState::Queued, "queued"),
         (WorkflowState::DeepRead, "read"),
         (WorkflowState::Archived, "archived"),
@@ -460,7 +470,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
         cli_text_reader::draw_editor(frame, rows[1], editor);
       } else {
         let hint = Paragraph::new(
-          "No paper loaded\n\nLdr+v → open feed · Enter to load",
+          "No paper loaded\n\nLdr+f → open feed · Enter to load",
         )
         .alignment(Alignment::Center)
         .style(Style::default().fg(t.text_dim));
@@ -711,6 +721,18 @@ fn draw_feed_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     return;
   }
 
+  // History tab: filter chips + activity log.
+  if app.feed_tab == FeedTab::History {
+    draw_history_tab(frame, app, content_area);
+    return;
+  }
+
+  // Library tab: workflow-state filter chips + filtered item list.
+  if app.feed_tab == FeedTab::Library {
+    draw_library_tab(frame, app, content_area);
+    return;
+  }
+
   // Narrow pane: switch to title-only list to avoid squished columns.
   if area.width < 70 {
     draw_narrow_feed(frame, app, content_area);
@@ -912,6 +934,259 @@ fn draw_discovery_palette(frame: &mut Frame, app: &App, list_area: Rect) {
     Paragraph::new(lines).style(Style::default().bg(t.bg_chat)),
     area,
   );
+}
+
+fn draw_library_tab(frame: &mut Frame, app: &mut App, area: Rect) {
+  let t = app.theme();
+  if area.height == 0 {
+    return;
+  }
+
+  // ── Filter chip rows ──────────────────────────────────────────────────
+  // Row 0: workflow chips · Row 1: time chips · Row 2: separator
+  let chips_area = Rect { height: 1, ..area };
+  let time_area = Rect { y: area.y + 1, height: 1, ..area };
+  let chips_sep_area = Rect { y: area.y + 2, height: 1, ..area };
+
+  // Per-chip count: how many items match if this chip were active.
+  let chip_count = |filter: crate::library::LibraryFilter| -> usize {
+    app
+      .items
+      .iter()
+      .filter(|i| filter.matches(i.workflow_state))
+      .count()
+  };
+
+  let mut chip_spans: Vec<Span> = vec![Span::raw("  ")];
+  let mut chip_width: usize = 2;
+  for (i, filter) in crate::library::LibraryFilter::ORDER.iter().enumerate() {
+    let active = *filter == app.library_filter;
+    let style = if active {
+      Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text_dim)
+    };
+    let text = format!("[{} {}]", filter.label(), chip_count(*filter));
+    chip_width += text.chars().count();
+    chip_spans.push(Span::styled(text, style));
+    if i + 1 < crate::library::LibraryFilter::ORDER.len() {
+      chip_spans.push(Span::raw("  "));
+      chip_width += 2;
+    }
+  }
+  let hint = if app.library_visual_mode {
+    let n = app.library_selected_urls.len();
+    format!("VISUAL · {n} selected · r read · w queue · x archive · Esc cancel")
+  } else {
+    "[ ] cycle  ·  v select  ·  f filter  ·  / search".to_string()
+  };
+  let hint_style = if app.library_visual_mode {
+    Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+  } else {
+    Style::default().fg(t.text_dim)
+  };
+  let total = area.width as usize;
+  if total > chip_width + hint.chars().count() + 4 {
+    let pad = total - chip_width - hint.chars().count() - 2;
+    chip_spans.push(Span::raw(" ".repeat(pad)));
+    chip_spans.push(Span::styled(hint, hint_style));
+  }
+  frame.render_widget(Paragraph::new(Line::from(chip_spans)), chips_area);
+
+  // Time chip row (smart filter: workflow × time)
+  let mut time_spans: Vec<Span> = vec![Span::raw("  ")];
+  for (i, filter) in crate::history::HistoryFilter::ORDER.iter().enumerate() {
+    let active = *filter == app.library_time_filter;
+    let style = if active {
+      Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text_dim)
+    };
+    let label = if matches!(*filter, crate::history::HistoryFilter::All) {
+      "Anytime".to_string()
+    } else {
+      filter.label().to_string()
+    };
+    time_spans.push(Span::styled(format!("[{label}]"), style));
+    if i + 1 < crate::history::HistoryFilter::ORDER.len() {
+      time_spans.push(Span::raw("  "));
+    }
+  }
+  let time_hint = "{ } cycle time";
+  let time_used: usize = time_spans
+    .iter()
+    .map(|s| s.content.chars().count())
+    .sum();
+  if (area.width as usize) > time_used + time_hint.chars().count() + 4 {
+    let pad = (area.width as usize) - time_used - time_hint.chars().count() - 2;
+    time_spans.push(Span::raw(" ".repeat(pad)));
+    time_spans.push(Span::styled(time_hint, Style::default().fg(t.text_dim)));
+  }
+  frame.render_widget(Paragraph::new(Line::from(time_spans)), time_area);
+
+  frame.render_widget(
+    Paragraph::new("─".repeat(area.width as usize))
+      .style(Style::default().fg(t.border)),
+    chips_sep_area,
+  );
+
+  // ── Item list (reuse the table renderer) ─────────────────────────────
+  let list_area = Rect {
+    x: area.x,
+    y: area.y + 3,
+    width: area.width,
+    height: area.height.saturating_sub(3),
+  };
+  if list_area.height == 0 {
+    return;
+  }
+
+  if app.visible_items().is_empty() {
+    let msg = if app.items.is_empty() {
+      "No items yet — fetch a feed first."
+    } else {
+      "No items match this filter."
+    };
+    frame.render_widget(
+      Paragraph::new(Line::from(Span::styled(
+        format!("  {msg}"),
+        Style::default().fg(t.text_dim),
+      ))),
+      list_area,
+    );
+    return;
+  }
+
+  if list_area.width < 70 {
+    draw_narrow_feed(frame, app, list_area);
+  } else {
+    draw_item_table(frame, app, list_area);
+  }
+}
+
+fn draw_history_tab(frame: &mut Frame, app: &App, area: Rect) {
+  let t = app.theme();
+  if area.height == 0 {
+    return;
+  }
+
+  // ── Filter chips row ────────────────────────────────────────────────
+  let chips_area = Rect { height: 1, ..area };
+  let chips_sep_area = Rect { y: area.y + 1, height: 1, ..area };
+  let mut chip_spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
+  let mut chip_width: usize = 2;
+  for (i, filter) in crate::history::HistoryFilter::ORDER.iter().enumerate() {
+    let active = *filter == app.history_filter;
+    let style = if active {
+      Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text_dim)
+    };
+    let text = format!("[{}]", filter.label());
+    chip_width += text.chars().count();
+    chip_spans.push(Span::styled(text, style));
+    if i + 1 < crate::history::HistoryFilter::ORDER.len() {
+      chip_spans.push(Span::raw("  "));
+      chip_width += 2;
+    }
+  }
+  let hint = "[ ] cycle  ·  f filter  ·  / search";
+  let total = area.width as usize;
+  if total > chip_width + hint.chars().count() + 4 {
+    let pad = total - chip_width - hint.chars().count() - 2;
+    chip_spans.push(Span::raw(" ".repeat(pad)));
+    chip_spans.push(Span::styled(hint, Style::default().fg(t.text_dim)));
+  }
+  frame.render_widget(Paragraph::new(Line::from(chip_spans)), chips_area);
+  frame.render_widget(
+    Paragraph::new("─".repeat(area.width as usize))
+      .style(Style::default().fg(t.border)),
+    chips_sep_area,
+  );
+
+  // ── Activity list ──────────────────────────────────────────────────
+  let list_area = Rect {
+    x: area.x,
+    y: area.y + 2,
+    width: area.width,
+    height: area.height.saturating_sub(2),
+  };
+  if list_area.height == 0 {
+    return;
+  }
+
+  let entries = app.filtered_history();
+  if entries.is_empty() {
+    let msg = if app.history.is_empty() {
+      "No history yet — open a paper or run a search."
+    } else {
+      "No entries in this time window."
+    };
+    frame.render_widget(
+      Paragraph::new(Line::from(Span::styled(
+        format!("  {msg}"),
+        Style::default().fg(t.text_dim),
+      ))),
+      list_area,
+    );
+    return;
+  }
+
+  let now = chrono::Utc::now();
+  let visible = list_area.height as usize;
+  let total = entries.len();
+  let selected = app.history_selected_index.min(total.saturating_sub(1));
+  let offset = app.history_list_offset.min(total.saturating_sub(visible.min(total)));
+
+  let title_w = (list_area.width as usize).saturating_sub(2 + 4 + 12 + 10 + 8);
+  let mut lines: Vec<Line> = Vec::with_capacity(visible);
+  for (i, entry) in entries.iter().skip(offset).take(visible).enumerate() {
+    let is_selected = offset + i == selected;
+    let row_style = if is_selected {
+      Style::default().fg(t.text).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text)
+    };
+    let dim = if is_selected {
+      Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)
+    } else {
+      Style::default().fg(t.text_dim)
+    };
+    let arrow = if is_selected {
+      Span::styled("→ ", Style::default().fg(t.accent))
+    } else {
+      Span::raw("  ")
+    };
+    let kind_marker = match entry.kind {
+      crate::history::HistoryKind::Paper => Span::styled("P  ", dim),
+      crate::history::HistoryKind::Query => Span::styled("Q  ", Style::default().fg(t.accent)),
+    };
+    let title_text = if entry.title.chars().count() > title_w {
+      let mut s: String = entry.title.chars().take(title_w.saturating_sub(1)).collect();
+      s.push('…');
+      s
+    } else {
+      format!("{:<width$}", entry.title, width = title_w)
+    };
+    let visit_text = if entry.visit_count > 1 {
+      format!("×{}", entry.visit_count)
+    } else {
+      String::new()
+    };
+    lines.push(Line::from(vec![
+      arrow,
+      kind_marker,
+      Span::styled(title_text, row_style),
+      Span::raw("  "),
+      Span::styled(format!("{:<10}", entry.source), dim),
+      Span::styled(
+        format!("{:<10}", crate::history::format_ago(entry.opened_at, now)),
+        dim,
+      ),
+      Span::styled(visit_text, dim),
+    ]));
+  }
+  frame.render_widget(Paragraph::new(lines), list_area);
 }
 
 fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1174,12 +1449,15 @@ fn draw_item_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
   // ── Build rows for visible window only ────────────────────────────────────
   let t_rows = std::time::Instant::now();
+  let visual_mode = app.feed_tab == FeedTab::Library && app.library_visual_mode;
   let rows: Vec<Row> = window
     .iter()
     .enumerate()
     .map(|(i, item)| {
       let item_idx = start + i;
-      let is_selected = item_idx == app.active_selected_index();
+      let is_cursor = item_idx == app.active_selected_index();
+      let in_visual = visual_mode && app.library_selected_urls.contains(&item.url);
+      let is_selected = is_cursor || in_visual;
       let (content_height, title_lines) = &window_data[i];
 
       let signal_style = match item.signal {
@@ -1486,57 +1764,23 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
   s += 1;
   lines.push(Line::from(""));
 
-  lines.push(filter_header("State", &t));
-  if focused && s == c {
-    cursor_line = lines.len();
+  // Workflow state filtering moved to the Library tab chips — the panel only
+  // covers source / signal / content_type / tags now.
+
+  let tag_names = crate::tags::all_tags(&app.item_tags);
+  if !tag_names.is_empty() {
+    lines.push(filter_header("Tags", &t));
+    for name in tag_names {
+      let active = f.tags.contains(&name);
+      let cursor = focused && s == c;
+      if cursor {
+        cursor_line = lines.len();
+      }
+      lines.push(filter_row_owned(name, active, cursor, &t));
+      s += 1;
+    }
+    lines.push(Line::from(""));
   }
-  lines.push(filter_row(
-    "inbox",
-    f.workflow_states.contains(&WorkflowState::Inbox),
-    focused && s == c,
-    &t,
-  ));
-  s += 1;
-  if focused && s == c {
-    cursor_line = lines.len();
-  }
-  lines.push(filter_row(
-    "skimmed",
-    f.workflow_states.contains(&WorkflowState::Skimmed),
-    focused && s == c,
-    &t,
-  ));
-  s += 1;
-  if focused && s == c {
-    cursor_line = lines.len();
-  }
-  lines.push(filter_row(
-    "queued",
-    f.workflow_states.contains(&WorkflowState::Queued),
-    focused && s == c,
-    &t,
-  ));
-  s += 1;
-  if focused && s == c {
-    cursor_line = lines.len();
-  }
-  lines.push(filter_row(
-    "read",
-    f.workflow_states.contains(&WorkflowState::DeepRead),
-    focused && s == c,
-    &t,
-  ));
-  s += 1;
-  if focused && s == c {
-    cursor_line = lines.len();
-  }
-  lines.push(filter_row(
-    "archived",
-    f.workflow_states.contains(&WorkflowState::Archived),
-    focused && s == c,
-    &t,
-  ));
-  s += 1;
 
   lines.push(Line::from(Span::styled(hrule, Style::default().fg(t.border))));
 
@@ -1622,11 +1866,6 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let w = dash_inner.width as usize;
 
-    let inbox = app
-      .items
-      .iter()
-      .filter(|i| i.workflow_state == WorkflowState::Inbox)
-      .count();
     let queued = app
       .items
       .iter()
@@ -1636,6 +1875,11 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       .items
       .iter()
       .filter(|i| i.workflow_state == WorkflowState::DeepRead)
+      .count();
+    let archived = app
+      .items
+      .iter()
+      .filter(|i| i.workflow_state == WorkflowState::Archived)
       .count();
     let total = app.items.len();
 
@@ -1745,14 +1989,14 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       Line::from(vec![
         Span::styled("Library    ", activity_label_style),
         Span::styled(
-          truncate(&format!("Inbox {inbox}   Queue {queued}"), value_w),
+          truncate(&format!("Queue {queued}   Read {read}"), value_w),
           val_style,
         ),
       ]),
       Line::from(vec![
         Span::styled("           ", label_style),
         Span::styled(
-          truncate(&format!("Read {read}   Total {total}"), value_w),
+          truncate(&format!("Archived {archived}   Total {total}"), value_w),
           val_style,
         ),
       ]),
@@ -1855,10 +2099,28 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if !tags.is_empty() {
       push_detail_field(
         &mut lines,
-        "Tags",
+        "Topics",
         &tags,
         label_style,
         value_style,
+        detail_w,
+        2,
+      );
+    }
+
+    let user_tags = crate::tags::for_url(&app.item_tags, &item.url);
+    if !user_tags.is_empty() {
+      let formatted = user_tags
+        .iter()
+        .map(|t| format!("[{t}]"))
+        .collect::<Vec<_>>()
+        .join("  ");
+      push_detail_field(
+        &mut lines,
+        "Tags",
+        &formatted,
+        label_style,
+        accent_style,
         detail_w,
         2,
       );
@@ -1954,6 +2216,38 @@ fn filter_header(
     label,
     Style::default().fg(t.header).add_modifier(Modifier::BOLD),
   ))
+}
+
+fn filter_row_owned(
+  label: String,
+  active: bool,
+  cursor: bool,
+  t: &crate::theme::Theme,
+) -> Line<'static> {
+  let checkbox = if active { "[x]" } else { "[ ]" };
+  if cursor {
+    let hl = t.style_selection_text();
+    Line::from(vec![
+      Span::styled("  ", hl),
+      Span::styled(checkbox, hl),
+      Span::styled(" ", hl),
+      Span::styled(label, hl),
+    ])
+  } else if active {
+    Line::from(vec![
+      Span::raw("  "),
+      Span::styled(checkbox, Style::default().fg(t.text)),
+      Span::raw(" "),
+      Span::styled(label, Style::default().fg(t.text)),
+    ])
+  } else {
+    Line::from(vec![
+      Span::raw("  "),
+      Span::styled(checkbox, Style::default().fg(t.text_dim)),
+      Span::raw(" "),
+      Span::styled(label, Style::default().fg(t.text_dim)),
+    ])
+  }
 }
 
 fn filter_row(
@@ -2139,15 +2433,11 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 fn footer_command_line(app: &App) -> Line<'static> {
   let t = app.theme();
   let ordinary = Style::default().fg(t.text_dim);
+  let accent = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
   let repo_style = Style::default().fg(t.success);
   let visible = app.visible_items().len();
   let total = app.items_for_tab().len();
   let filtered = !app.search_query.is_empty() || !app.active_filters.is_empty();
-  let tab_target = if app.feed_tab == FeedTab::Discoveries {
-    "inbox"
-  } else {
-    "discoveries"
-  };
   let repo_available = !app.reader_active
     && !app.chat_fullscreen
     && app.focused_pane == PaneId::Feed
@@ -2156,6 +2446,77 @@ fn footer_command_line(app: &App) -> Line<'static> {
       .is_some_and(|item| item.github_owner.is_some() && item.github_repo_name.is_some());
 
   let mut spans = Vec::new();
+
+  if app.leader_active {
+    spans.push(Span::styled("leader", accent));
+    spans.push(Span::styled(
+      ": f feed | s settings | n notes | c chat | h/j/k/l focus | ? help",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
+  if app.reader_dual_active && app.reader_bottom_open && app.reader_bottom_focused {
+    let label = if app.reader_bottom_details {
+      "reader details"
+    } else {
+      "reader feed"
+    };
+    let keys = if app.reader_bottom_details {
+      ": j/k scroll | d back | q/Esc close | ? help"
+    } else {
+      ": j/k move | Enter open | d details | q/Esc close | ? help"
+    };
+    spans.push(Span::styled(label, accent));
+    spans.push(Span::styled(keys, ordinary));
+    return Line::from(spans);
+  }
+
+  if app.search_active {
+    spans.push(Span::styled("search", accent));
+    spans.push(Span::styled(
+      ": type to filter | Enter keep | Esc clear | ? help",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
+  if app.filter_focus {
+    spans.push(Span::styled("filters", accent));
+    spans.push(Span::styled(
+      ": j/k move | Space toggle | c clear | f/Tab return | Esc clear",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
+  if app.focused_pane == PaneId::Reader || app.focused_pane == PaneId::SecondaryReader {
+    spans.push(Span::styled("reader", accent));
+    spans.push(Span::styled(
+      ": q/Esc close | Tab switch pane | Ldr+f feed | Ldr+n notes | ? help",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
+  if app.focused_pane == PaneId::Notes && app.notes_active {
+    spans.push(Span::styled("notes", accent));
+    spans.push(Span::styled(
+      ": edit note | Ldr+[ / ] tabs | Ldr+w close | Ldr+n hide | ? help",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
+  if app.focused_pane == PaneId::Chat && app.chat_active {
+    spans.push(Span::styled("chat", accent));
+    spans.push(Span::styled(
+      ": Enter send | / commands | Esc sessions | Ldr+c hide | ? help",
+      ordinary,
+    ));
+    return Line::from(spans);
+  }
+
   if filtered {
     spans.push(Span::styled(format!("{visible}/{total} filtered"), ordinary));
     spans.push(Span::styled(" | ", ordinary));
@@ -2164,14 +2525,25 @@ fn footer_command_line(app: &App) -> Line<'static> {
     spans.push(Span::styled("v repo", repo_style));
     spans.push(Span::styled(" | ", ordinary));
   }
-  spans.push(Span::styled(
-    "w queue | r read | s skim | x archive | ",
-    ordinary,
-  ));
-  spans.push(Span::styled(
-    format!("q quit | ctrl+t leader | tab {tab_target} | ? help"),
-    ordinary,
-  ));
+
+  if app.feed_tab == FeedTab::Discoveries {
+    spans.push(Span::styled("discoveries", accent));
+    spans.push(Span::styled(
+      ": / search | Enter open | Ctrl+N new | Tab inbox | ? help",
+      ordinary,
+    ));
+  } else {
+    spans.push(Span::styled("feed", accent));
+    spans.push(Span::styled(
+      ": j/k move | Enter read | Space details | f filters | Tab discoveries",
+      ordinary,
+    ));
+    spans.push(Span::styled(" | ", ordinary));
+    spans.push(Span::styled(
+      "w queue | r read | s skim | x archive | q quit | ? help",
+      ordinary,
+    ));
+  }
 
   Line::from(spans)
 }
@@ -2218,6 +2590,166 @@ fn quiet_popup_block(
       title,
       Style::default().fg(t.header).add_modifier(Modifier::BOLD),
     ))
+}
+
+// ── Quit confirmation popup ───────────────────────────────────────────────
+
+fn draw_tag_picker(frame: &mut Frame, app: &App) {
+  let t = app.theme();
+  let area = frame.area();
+
+  let all = crate::tags::all_tags(&app.item_tags);
+  let target_count = app.tag_picker_target_urls.len();
+  let target_label = if target_count == 1 {
+    "1 item".to_string()
+  } else {
+    format!("{target_count} items")
+  };
+
+  // Find which tags are present on ALL targets.
+  let common_on_all: std::collections::HashSet<String> = all
+    .iter()
+    .filter(|tag| {
+      app.tag_picker_target_urls.iter().all(|url| {
+        crate::tags::for_url(&app.item_tags, url)
+          .iter()
+          .any(|t| t == *tag)
+      })
+    })
+    .cloned()
+    .collect();
+
+  // Visible rows: cap to popup body height.
+  let body_h = (all.len() as u16 + 5).clamp(8, 20);
+  let popup_rect = popup_rect(area, 50, body_h, 50, 8, 70);
+  frame.render_widget(Clear, popup_rect);
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(t.border_active))
+    .title(Span::styled(
+      format!(" tags · {target_label} "),
+      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+    ));
+  let inner = popup_inner(block.inner(popup_rect), 2, 1);
+  frame.render_widget(block, popup_rect);
+  if inner.height == 0 {
+    return;
+  }
+
+  let mut lines: Vec<Line> = Vec::new();
+  // Input row
+  lines.push(Line::from(vec![
+    Span::styled("+ ", Style::default().fg(t.accent)),
+    Span::styled(
+      format!("{}█", app.tag_picker_input),
+      Style::default().fg(t.text),
+    ),
+  ]));
+  lines.push(Line::raw(""));
+
+  if all.is_empty() {
+    lines.push(Line::from(Span::styled(
+      "No tags yet. Type a name and press Enter.",
+      Style::default().fg(t.text_dim),
+    )));
+  } else {
+    for (i, tag) in all.iter().enumerate() {
+      let is_selected = i == app.tag_picker_selected;
+      let active = common_on_all.contains(tag);
+      let count = crate::tags::count_for(&app.item_tags, tag);
+      let arrow = if is_selected {
+        Span::styled("→ ", Style::default().fg(t.accent))
+      } else {
+        Span::raw("  ")
+      };
+      let checkbox = if active { "[x] " } else { "[ ] " };
+      let row_style = if is_selected {
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD)
+      } else {
+        Style::default().fg(t.text_dim)
+      };
+      lines.push(Line::from(vec![
+        arrow,
+        Span::styled(checkbox, row_style),
+        Span::styled(tag.clone(), row_style),
+        Span::styled(
+          format!("  ({count})"),
+          Style::default().fg(t.text_dim),
+        ),
+      ]));
+    }
+  }
+
+  lines.push(Line::raw(""));
+  lines.push(Line::from(Span::styled(
+    "↑↓ navigate · Space toggle · Enter add new · Esc close",
+    Style::default().fg(t.text_dim),
+  )));
+
+  frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_quit_popup(frame: &mut Frame, app: &App) {
+  let t = app.theme();
+  let area = frame.area();
+
+  let (title, body, action) = match app.quit_popup_kind {
+    QuitPopupKind::QuitApp => (
+      " quit trench? ",
+      &["Feed, progress and sessions are", "saved automatically."][..],
+      "quit",
+    ),
+    QuitPopupKind::QuitWithProgress => (
+      " quit trench? ",
+      &["Discovery in progress will be", "cancelled."][..],
+      "quit",
+    ),
+    QuitPopupKind::QuitWithChat => (
+      " quit trench? ",
+      &["You have an unsent message", "in chat."][..],
+      "quit",
+    ),
+    QuitPopupKind::LeaveReader => (
+      " close reader ",
+      &["Your reading position is saved."][..],
+      "close",
+    ),
+  };
+
+  let popup_rect = popup_rect(area, 38, 9, 44, 9, 60);
+  frame.render_widget(Clear, popup_rect);
+
+  let block = Block::default()
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(t.border_active))
+    .title(Span::styled(
+      title,
+      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+    ));
+
+  let inner = popup_inner(block.inner(popup_rect), 2, 1);
+  frame.render_widget(block, popup_rect);
+
+  if inner.height == 0 {
+    return;
+  }
+
+  let mut lines: Vec<Line> = Vec::new();
+  for &line in body {
+    lines.push(Line::styled(line.to_string(), Style::default().fg(t.text)));
+  }
+  lines.push(Line::raw(""));
+  lines.push(Line::from(vec![
+    Span::styled(
+      "q · Enter  ",
+      Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    ),
+    Span::styled(format!("{action}     "), Style::default().fg(t.text_dim)),
+    Span::styled("Esc  cancel", Style::default().fg(t.text_dim)),
+  ]));
+
+  frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── A1: floating reader popup (Ldr+Enter) ─────────────────────────────────
@@ -3798,13 +4330,13 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("j / k", "Move down / up"),
       ("g / G", "Jump to top / bottom"),
       ("Tab", "Switch Inbox / Discoveries"),
-      ("f", "Focus filter panel"),
       ("Enter", "Open paper in reader"),
       ("Space", "Show abstract/details"),
+      ("Search", "/ search · Esc clear"),
       ("?", "Open help"),
       ("q", "Quit from feed"),
       ("Esc", "Clear/back/cancel"),
-      ("click", "Focus interactive pane"),
+      ("Mouse", "Click to focus interactive pane"),
     ],
   ),
   (
@@ -3813,43 +4345,25 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Ldr = Ctrl+T", ""),
       ("? / Ldr+?", "This help screen"),
       ("Ldr+q", "Quit application"),
-      ("Ldr+Enter", "Open paper in floating popup"),
-      ("Ldr+v", "Cycle reader layout (full→split→dual)"),
-      ("Ldr+Esc", "Step back reader state"),
       ("Ldr+s", "Open settings"),
+      ("Reader", "Ldr+Enter popup · Ldr+f feed · Ldr+Esc back"),
       ("Ldr+n", "Toggle notes panel"),
       ("Ldr+c", "Toggle chat panel"),
       ("Ldr+z", "Move chat top / bottom"),
-      ("Ldr+h / Ldr+l", "Focus interactive pane left / right"),
-      ("Ldr+j / Ldr+k", "Focus interactive pane down / up"),
+      ("Pane focus", "Ldr+h/j/k/l move by direction"),
       ("Ldr+1 / 2 / 3", "Focus interactive pane by number"),
-      ("", ""),
-      ("Notes / Reader tabs", ""),
-      ("Ldr+[", "Previous tab"),
-      ("Ldr+]", "Next tab"),
-      ("Ldr+w", "Close current tab"),
+      ("Tabs", "Ldr+[ prev · Ldr+] next · Ldr+w close"),
     ],
   ),
   (
     "Feed",
     &[
-      ("/", "Search"),
-      ("Esc", "Clear search"),
-      ("q", "Quit application"),
       ("R", "Refresh all sources"),
       ("o", "Open URL in browser"),
       ("v", "Open repo viewer"),
-      ("i", "Mark Inbox"),
-      ("s", "Mark Skimmed"),
-      ("r", "Mark DeepRead"),
-      ("w", "Mark Queued"),
-      ("x", "Archive"),
-      ("", ""),
-      ("Filter panel", ""),
-      ("Space", "Toggle filter at cursor"),
-      ("c", "Clear all filters"),
-      ("Esc", "Clear filters and return"),
-      ("Tab / f", "Return to feed"),
+      ("Workflow", "i inbox · s skimmed · r deep read"),
+      ("Queue", "w queued · x archive"),
+      ("Filters", "f panel · Space toggle · c clear · Esc return"),
     ],
   ),
   (
@@ -3857,31 +4371,18 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     &[
       ("vim keys", "Standard vim navigation"),
       ("Tab", "Switch primary / secondary pane"),
-      ("Ldr+v", "Toggle bottom feed panel (dual mode)"),
+      ("Ldr+f", "Cycle reader/feed layout"),
       ("Ldr+n", "Toggle notes panel"),
       ("q / Esc", "Close / step back reader state"),
-      ("", ""),
-      ("Bottom feed panel", ""),
-      ("j / k", "Navigate or scroll details"),
-      ("d", "Toggle feed/details view"),
-      ("/", "Search feed"),
-      ("Tab", "Switch Inbox / Discoveries"),
-      ("Enter", "Open selected paper"),
-      ("q / Esc", "Close bottom panel"),
+      ("Bottom feed", "j/k move · d details · / search · Enter open"),
       ("", ""),
       ("Tabs", ""),
       ("Ldr+t", "Open in new tab (prompt if dual)"),
       ("Ldr+[", "Previous tab"),
       ("Ldr+]", "Next tab"),
       ("Ldr+w", "Close current tab"),
-      ("", ""),
-      ("Voice", ""),
-      ("r", "Read current paragraph"),
-      ("R", "Read from cursor to end"),
-      ("Ctrl+p", "Continuous reading (auto-advance)"),
-      ("Space", "Pause / resume playback"),
-      ("c", "Re-centre on playing paragraph"),
-      ("Esc", "Stop playback"),
+      ("Voice", "r read · R read from cursor · Ctrl+p continuous"),
+      ("Playback", "Space pause/resume · c re-centre · Esc stop"),
     ],
   ),
   (
@@ -3891,17 +4392,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("/", "Open AI topic search"),
       ("Enter", "Run search or command"),
       ("Ctrl+N", "Force new search"),
-      ("", ""),
-      ("Command palette", ""),
-      ("Up / Down", "Navigate commands"),
-      ("Tab", "Complete selected command"),
-      ("Esc", "Close search input"),
-      ("", ""),
-      ("Plan checklist", ""),
-      ("j / k", "Navigate results"),
-      ("Space", "Toggle source in plan"),
-      ("a", "Add all selected sources"),
-      ("Esc", "Clear discovery plan"),
+      ("Command palette", "Up/Down choose · Tab complete · Esc close"),
+      ("Plan checklist", "j/k move · Space toggle · a add all"),
     ],
   ),
   (
@@ -3914,11 +4406,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Tab", "Complete slash command"),
       ("Up / Down", "Navigate slash commands"),
       ("Ctrl+n / Ctrl+p", "Next / previous slash command"),
-      ("", ""),
-      ("Session list", ""),
-      ("n", "New session"),
-      ("d", "Delete session"),
-      ("Enter", "Open session"),
+      ("Session list", "n new · d delete · Enter open"),
       ("Ldr+c", "Close chat panel"),
       ("Ldr+z", "Move chat top / bottom"),
     ],
@@ -3932,29 +4420,9 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("s / S", "Save all fields"),
       ("p", "Manage sources"),
       ("q / Esc", "Close settings"),
-      ("", ""),
-      ("Sources panel", ""),
-      ("Space", "Toggle source on / off"),
-      ("Enter / /", "Add custom source (URL)"),
-      ("d", "Delete custom feed"),
-      ("Esc", "Back to settings"),
-      ("", ""),
-      ("Theme picker", ""),
-      ("j / k", "Preview theme"),
-      ("Enter", "Select / create theme"),
-      ("e", "Edit custom theme"),
-      ("d", "Delete custom theme"),
-      ("Esc", "Cancel picker"),
-      ("", ""),
-      ("Theme editor", ""),
-      ("j / k", "Choose color role"),
-      ("h / l", "Choose hue"),
-      ("[ / ]", "Choose shade"),
-      ("Space", "Apply color"),
-      ("x", "Edit hex value"),
-      ("n", "Rename theme"),
-      ("r", "Reset to base theme"),
-      ("s / Enter", "Save custom theme"),
+      ("Sources", "Space toggle · Enter or / add URL · d delete"),
+      ("Theme picker", "j/k preview · Enter select/create · e edit"),
+      ("Theme editor", "Space apply · x hex · n rename · s save"),
     ],
   ),
   (

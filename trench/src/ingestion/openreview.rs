@@ -100,7 +100,13 @@ fn note_to_item(note: OrNote) -> Option<FeedItem> {
     (u.clone(), u)
   };
 
-  let github_repo = extract_str(&content, "code");
+  let github_repo = extract_str(&content, "code")
+    .or_else(|| super::huggingface::extract_unique_github_from_text(&summary))
+    .filter(|r| !super::huggingface::is_anonymous_review_url(r));
+  let (github_owner, github_repo_name) = match github_repo.as_deref() {
+    Some(repo) => super::huggingface::parse_github_owner_repo(repo),
+    None => (None, None),
+  };
 
   let domain_tags: Vec<String> =
     detect_subtopics(&title, &summary).iter().map(|s| s.to_string()).collect();
@@ -119,8 +125,8 @@ fn note_to_item(note: OrNote) -> Option<FeedItem> {
     url,
     upvote_count: 0,
     github_repo,
-    github_owner: None,
-    github_repo_name: None,
+    github_owner,
+    github_repo_name,
     benchmark_results: vec![],
     full_content: None,
     source_name: "openreview".to_string(),

@@ -19,6 +19,7 @@ pub enum CommandId {
   ClearChat,
   Discover,
   ClearDiscoveries,
+  ClearHistory,
   AddArxivCategory,
   AddFeed,
   Sota,
@@ -29,6 +30,8 @@ pub enum CommandId {
   Author,
   Trending,
   Watch,
+  ExportHistory,
+  ExportLibrary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +70,15 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     command: "/clear discoveries",
     completion: "/clear discoveries",
     description: "Clear the discovery feed",
+    category: CommandCategory::Discovery,
+    kind: CommandKind::BuiltIn,
+    show_in_discovery: false,
+  },
+  CommandSpec {
+    id: CommandId::ClearHistory,
+    command: "/clear history",
+    completion: "/clear history",
+    description: "Wipe the activity history",
     category: CommandCategory::Discovery,
     kind: CommandKind::BuiltIn,
     show_in_discovery: false,
@@ -160,6 +172,24 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     category: CommandCategory::Planned,
     kind: CommandKind::Stub,
     show_in_discovery: true,
+  },
+  CommandSpec {
+    id: CommandId::ExportHistory,
+    command: "/export-history",
+    completion: "/export-history ",
+    description: "Export current history view to ~/.config/trench/exports (md/jsonl)",
+    category: CommandCategory::Discovery,
+    kind: CommandKind::BuiltIn,
+    show_in_discovery: false,
+  },
+  CommandSpec {
+    id: CommandId::ExportLibrary,
+    command: "/export-library",
+    completion: "/export-library ",
+    description: "Export current library view to ~/.config/trench/exports (md/jsonl)",
+    category: CommandCategory::Discovery,
+    kind: CommandKind::BuiltIn,
+    show_in_discovery: false,
   },
 ];
 

@@ -95,6 +95,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
   let mut url = String::new();
   let mut published_at = String::new();
   let mut summary = String::new();
+  let mut arxiv_comment = String::new();
   let mut authors: Vec<String> = Vec::new();
   let mut current_author_name = String::new();
   let mut domain_tags: Vec<String> = Vec::new();
@@ -113,6 +114,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
             url.clear();
             published_at.clear();
             summary.clear();
+            arxiv_comment.clear();
             authors.clear();
             domain_tags.clear();
           }
@@ -153,6 +155,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
             "id" => url.push_str(&text),
             "published" => published_at.push_str(&text),
             "summary" => summary.push_str(&text),
+            "arxiv:comment" => arxiv_comment.push_str(&text),
             _ => {}
           }
         }
@@ -180,7 +183,11 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
           current_tag.clear();
 
           let clean_title = collapse_whitespace(&title);
-          let summary_short = collapse_whitespace(&summary);
+          let mut summary_short = collapse_whitespace(&summary);
+          let comment = collapse_whitespace(&arxiv_comment);
+          if !comment.is_empty() {
+            summary_short = format!("{summary_short} [{comment}]");
+          }
           // arXiv published_at looks like "2026-03-15T00:00:00Z" — keep date only
           let date =
             published_at.split('T').next().unwrap_or(&published_at).to_string();
@@ -227,6 +234,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
           url = String::new();
           published_at = String::new();
           summary = String::new();
+          arxiv_comment = String::new();
           authors = Vec::new();
           domain_tags = Vec::new();
         }
@@ -264,7 +272,7 @@ fn percent_encode_query_part(part: &str) -> String {
   out
 }
 
-fn normalize_arxiv_id(value: &str) -> Option<String> {
+pub(crate) fn normalize_arxiv_id(value: &str) -> Option<String> {
   let mut id = value.trim();
   for prefix in
     &["https://arxiv.org/abs/", "http://arxiv.org/abs/", "arxiv.org/abs/"]
@@ -284,4 +292,51 @@ fn normalize_arxiv_id(value: &str) -> Option<String> {
   let valid = id.contains('.')
     && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
   if valid { Some(id.to_string()) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn normalize_arxiv_id_handles_common_shapes() {
+    assert_eq!(normalize_arxiv_id("2312.12345").as_deref(), Some("2312.12345"));
+    assert_eq!(
+      normalize_arxiv_id("https://arxiv.org/abs/2312.12345v3").as_deref(),
+      Some("2312.12345"),
+    );
+    assert_eq!(
+      normalize_arxiv_id("http://arxiv.org/abs/2312.12345v1").as_deref(),
+      Some("2312.12345"),
+    );
+    assert_eq!(
+      normalize_arxiv_id("arxiv.org/abs/2312.12345?context=cs.LG").as_deref(),
+      Some("2312.12345"),
+    );
+    assert_eq!(normalize_arxiv_id(""), None);
+    assert_eq!(normalize_arxiv_id("not an id"), None);
+    assert_eq!(normalize_arxiv_id("https://openreview.net/forum?id=abc"), None);
+  }
+
+  #[test]
+  fn parse_atom_folds_arxiv_comment_into_summary() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.00001v1</id>
+    <title>Sample Paper</title>
+    <summary>This is the abstract.</summary>
+    <published>2026-04-01T00:00:00Z</published>
+    <arxiv:comment>16 pages, 4 figures. Code at github.com/foo/bar</arxiv:comment>
+  </entry>
+</feed>"#;
+    let items = parse_atom(xml).expect("parse ok");
+    assert_eq!(items.len(), 1);
+    assert!(
+      items[0].summary_short.contains("github.com/foo/bar"),
+      "expected comment text in summary_short, got: {}",
+      items[0].summary_short
+    );
+    assert!(items[0].summary_short.contains("This is the abstract."));
+  }
 }
