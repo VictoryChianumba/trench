@@ -225,6 +225,8 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedItem>, String> {
             benchmark_results: vec![],
             full_content: None,
             source_name: "arxiv".to_string(),
+            title_lower: String::new(),
+            authors_lower: Vec::new(),
           };
           item.signal = item.compute_signal();
           item.sanitize_in_place();

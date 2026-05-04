@@ -271,6 +271,8 @@ fn parse_feed(
             benchmark_results: vec![],
             full_content,
             source_name: source_name.to_string(),
+            title_lower: String::new(),
+            authors_lower: Vec::new(),
           };
           item.signal = item.compute_signal();
           item.sanitize_in_place();

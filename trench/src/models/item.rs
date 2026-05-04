@@ -150,6 +150,84 @@ mod workflow_state_tests {
   }
 
   #[test]
+  fn sanitize_in_place_populates_lowercase_search_cache() {
+    use super::{
+      ContentType, FeedItem, SignalLevel, SourcePlatform, WorkflowState,
+    };
+    let mut item = FeedItem {
+      id: "x".into(),
+      title: "Mixed CASE Title".into(),
+      source_platform: SourcePlatform::ArXiv,
+      content_type: ContentType::Paper,
+      domain_tags: vec![],
+      signal: SignalLevel::Primary,
+      published_at: String::new(),
+      authors: vec!["Alice Smith".into(), "BOB JONES".into()],
+      summary_short: String::new(),
+      workflow_state: WorkflowState::Inbox,
+      url: "u".into(),
+      upvote_count: 0,
+      github_repo: None,
+      github_owner: None,
+      github_repo_name: None,
+      benchmark_results: vec![],
+      full_content: None,
+      source_name: String::new(),
+      title_lower: String::new(),
+      authors_lower: Vec::new(),
+    };
+    item.sanitize_in_place();
+    assert_eq!(item.title_lower, "mixed case title");
+    assert_eq!(
+      item.authors_lower,
+      vec!["alice smith".to_string(), "bob jones".to_string()]
+    );
+  }
+
+  #[test]
+  fn cached_lowercase_fields_are_serde_skip() {
+    use super::{
+      ContentType, FeedItem, SignalLevel, SourcePlatform, WorkflowState,
+    };
+    let item = FeedItem {
+      id: "x".into(),
+      title: "T".into(),
+      source_platform: SourcePlatform::ArXiv,
+      content_type: ContentType::Paper,
+      domain_tags: vec![],
+      signal: SignalLevel::Primary,
+      published_at: String::new(),
+      authors: vec![],
+      summary_short: String::new(),
+      workflow_state: WorkflowState::Inbox,
+      url: "u".into(),
+      upvote_count: 0,
+      github_repo: None,
+      github_owner: None,
+      github_repo_name: None,
+      benchmark_results: vec![],
+      full_content: None,
+      source_name: String::new(),
+      title_lower: "this should not appear in the json".into(),
+      authors_lower: vec!["nor should this".into()],
+    };
+    let json = serde_json::to_string(&item).unwrap();
+    assert!(
+      !json.contains("this should not appear"),
+      "title_lower leaked into serialized output: {json}"
+    );
+    assert!(
+      !json.contains("nor should this"),
+      "authors_lower leaked into serialized output: {json}"
+    );
+    // Round-trip should produce empty cache fields (default), since the
+    // serialized form omits them and Deserialize fills with Default.
+    let back: FeedItem = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.title_lower, "");
+    assert_eq!(back.authors_lower, Vec::<String>::new());
+  }
+
+  #[test]
   fn round_trips_via_json() {
     for v in [
       WorkflowState::Inbox,
@@ -199,6 +277,17 @@ pub struct FeedItem {
   pub full_content: Option<String>,
   #[serde(default)]
   pub source_name: String,
+
+  /// Lowercased title cached for the search filter. `#[serde(skip)]` keeps
+  /// `cache.json` size unchanged; populated by `sanitize_in_place` on every
+  /// ingestion + every cache load. Eliminates ~13K `to_lowercase` allocs
+  /// per typed search character on a ~2,600-item cache.
+  #[serde(skip)]
+  pub title_lower: String,
+  /// Lowercased author names, parallel to `self.authors`. Same role as
+  /// `title_lower`.
+  #[serde(skip)]
+  pub authors_lower: Vec<String>,
 }
 
 impl FeedItem {
@@ -249,5 +338,10 @@ impl FeedItem {
     if let Some(content) = &mut self.full_content {
       *content = sanitize_terminal_text(content);
     }
+    // Refresh the search-filter cache. Both fields are #[serde(skip)] so
+    // they need to be rebuilt at every entry point that produces or loads
+    // a FeedItem; sanitize_in_place is the natural chokepoint.
+    self.title_lower = self.title.to_lowercase();
+    self.authors_lower = self.authors.iter().map(|a| a.to_lowercase()).collect();
   }
 }

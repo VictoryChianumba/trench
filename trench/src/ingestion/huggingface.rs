@@ -219,6 +219,8 @@ fn parse_papers(html: &str, today: &str) -> Vec<FeedItem> {
       benchmark_results: vec![],
       full_content: None,
       source_name: "huggingface".to_string(),
+      title_lower: String::new(),
+      authors_lower: Vec::new(),
     };
     item.signal = item.compute_signal();
     item.sanitize_in_place();
@@ -666,6 +668,8 @@ mod tests {
       benchmark_results: vec![],
       full_content: None,
       source_name: String::new(),
+      title_lower: String::new(),
+      authors_lower: Vec::new(),
     }
   }
 

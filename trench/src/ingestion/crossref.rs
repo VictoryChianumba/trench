@@ -109,6 +109,8 @@ fn item_to_feed(work: CrWork) -> Option<FeedItem> {
     benchmark_results: vec![],
     full_content: None,
     source_name: "crossref".to_string(),
+    title_lower: String::new(),
+    authors_lower: Vec::new(),
   };
   item.signal = item.compute_signal();
   item.sanitize_in_place();

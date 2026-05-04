@@ -71,7 +71,10 @@ pub struct ChatUi {
   pub is_loading: bool,
   pub frame_count: u64,
   /// Words remaining to reveal during streaming simulation.
-  pub streaming_words: Vec<String>,
+  /// `VecDeque` so the per-tick word reveal pops from the front in O(1)
+  /// instead of shifting the entire vector on every tick (the prior
+  /// `Vec::remove(0)` was O(N) at ~62Hz × N words remaining).
+  pub streaming_words: std::collections::VecDeque<String>,
   /// True while word-by-word reveal is in progress.
   pub is_streaming: bool,
   /// Vim-style input mode for the chat pane.
@@ -112,7 +115,7 @@ impl ChatUi {
       pending_response: None,
       is_loading: false,
       frame_count: 0,
-      streaming_words: Vec::new(),
+      streaming_words: std::collections::VecDeque::new(),
       is_streaming: false,
       input_mode: ChatInputMode::Insert,
       slash_selected: 0,
@@ -141,8 +144,7 @@ impl ChatUi {
           }
           self.sync_index();
         }
-      } else {
-        let word = self.streaming_words.remove(0);
+      } else if let Some(word) = self.streaming_words.pop_front() {
         if let Some(session) = self.active_session.as_mut() {
           if let Some(last_msg) = session.messages.last_mut() {
             if !last_msg.content.is_empty() {
@@ -206,7 +208,7 @@ impl ChatUi {
         }
 
         // Split into words for streaming reveal.
-        let words: Vec<String> =
+        let words: std::collections::VecDeque<String> =
           response.content.split_whitespace().map(|w| w.to_string()).collect();
 
         // Push a placeholder assistant message (content will fill as we stream).

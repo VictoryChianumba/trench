@@ -37,8 +37,12 @@ pub fn enrich(
   }
 
   for item in items.iter_mut() {
+    // Own the id here so we can call `apply_entry(item, ...)` later without
+    // a borrow conflict. The hot-path dedup in app.rs uses `&str` directly;
+    // this enrichment loop runs once per refresh, so the per-item allocation
+    // is negligible.
     let id = match arxiv_id_from_url(&item.url) {
-      Some(id) => id,
+      Some(id) => id.to_string(),
       None => {
         skipped += 1;
         continue;

@@ -1041,7 +1041,7 @@ fn draw_library_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     return;
   }
 
-  if app.visible_items().is_empty() {
+  if app.visible_count() == 0 {
     let msg = if app.items.is_empty() {
       "No items yet — fetch a feed first."
     } else {
@@ -2435,7 +2435,7 @@ fn footer_command_line(app: &App) -> Line<'static> {
   let ordinary = Style::default().fg(t.text_dim);
   let accent = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
   let repo_style = Style::default().fg(t.success);
-  let visible = app.visible_items().len();
+  let visible = app.visible_count();
   let total = app.items_for_tab().len();
   let filtered = !app.search_query.is_empty() || !app.active_filters.is_empty();
   let repo_available = !app.reader_active

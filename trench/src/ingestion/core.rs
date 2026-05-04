@@ -93,6 +93,8 @@ fn work_to_item(work: CoreWork) -> Option<FeedItem> {
     benchmark_results: vec![],
     full_content: None,
     source_name: "core".to_string(),
+    title_lower: String::new(),
+    authors_lower: Vec::new(),
   };
   item.signal = item.compute_signal();
   item.sanitize_in_place();

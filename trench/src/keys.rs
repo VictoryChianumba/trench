@@ -2136,7 +2136,7 @@ fn handle_library_tab(key: KeyEvent, app: &mut App) -> bool {
         return true;
       }
       KeyCode::Char('j') | KeyCode::Down => {
-        let len = app.visible_items().len();
+        let len = app.visible_count();
         if len > 0 {
           let next = (app.library_selected_index + 1).min(len - 1);
           app.library_selected_index = next;
@@ -2358,6 +2358,8 @@ fn reconstruct_feed_item(
     benchmark_results: Vec::new(),
     full_content: None,
     source_name: entry.source.clone(),
+    title_lower: entry.title.to_lowercase(),
+    authors_lower: meta.authors.iter().map(|a| a.to_lowercase()).collect(),
   }
 }
 

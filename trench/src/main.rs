@@ -715,7 +715,7 @@ fn handle_mouse(
       {
         let track_height = (track_bottom - track_top) as usize;
         let click_offset = (mouse.row - track_top) as usize;
-        let total = app.visible_items().len();
+        let total = app.visible_count();
         if total > 0 && track_height > 0 {
           let new_index =
             ((click_offset * total) / track_height).min(total - 1);
@@ -969,6 +969,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   if !cached.is_empty() {
     app.items = cached;
   }
+  // Build url_index + arxiv_id_index over the loaded items so the dedup
+  // hot path in process_incoming gets O(1) lookups from the very first
+  // batch. Same for discovery_items, which were loaded in App::new.
+  app.rebuild_indices();
+  app.rebuild_discovery_indices();
 
   // 2. Apply persisted states to cached items.
   for item in &mut app.items {
@@ -1010,27 +1015,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // 3. Start the TUI loop.
   loop {
-    // Drain any pending fetch results before drawing.
+    // Drain any pending fetch results before drawing. process_incoming +
+    // process_incoming_discovery internally call mark_dirty when state
+    // changes; the spinner increment is now gated on is_loading.
     app.process_incoming();
 
-    // Tick the embedded reader each frame (voice sync, demo hints, etc.).
+    // Tick the embedded reader(s) each frame (voice sync, demo hints, etc.).
+    // The editor manages its own needs_redraw; bridge it back into trench's
+    // dirty flag so trench's outer redraw cycle picks up editor mutations
+    // (e.g., voice highlight advance, demo-hint TTL expiry).
     if let Some(editor) = app.reader_editor_mut() {
       editor.tick();
+      if editor.check_needs_redraw() {
+        app.mark_dirty();
+      }
     }
     if let Some(editor) = app.reader_secondary_editor_mut() {
       editor.tick();
+      if editor.check_needs_redraw() {
+        app.mark_dirty();
+      }
     }
     if let Some(editor) = app.reader_popup_editor.as_mut() {
       editor.tick();
+      if editor.check_needs_redraw() {
+        app.mark_dirty();
+      }
     }
 
-    // Tick chat UI each frame (spinner + pending response channel).
+    // Tick chat UI each frame (spinner + pending response channel + word-by-
+    // word streaming reveal). When chat is streaming we want the next frame
+    // to render — capture is_streaming BEFORE tick so the FINAL word still
+    // triggers a redraw even though tick clears the flag on completion.
     if let Some(chat_ui) = app.chat_ui.as_mut() {
+      let was_streaming = chat_ui.is_streaming;
       chat_ui.tick();
+      if was_streaming || chat_ui.is_streaming {
+        app.mark_dirty();
+      }
     }
 
-    // Tick repo viewer momentum scroll.
+    // Tick repo viewer momentum scroll. If any repo context is decaying its
+    // velocity, mark dirty so the next frame renders the new scroll offset.
+    let was_repo_animating = app
+      .repo_context
+      .as_ref()
+      .map(|c| c.scroll_velocity.abs() >= 0.5)
+      .unwrap_or(false);
     app.repo_tick();
+    if was_repo_animating {
+      app.mark_dirty();
+    }
 
     // ── Drain background fetch results ────────────────────────────────
     if let Some(rx) = app.fulltext_rx.as_ref() {
@@ -1072,6 +1107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               app.set_notification(format!("Failed to fetch content: {e}"));
             }
           }
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
           log::debug!("fulltext drain: channel disconnected");
@@ -1080,6 +1116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           app.fulltext_for_secondary = false;
           app.fulltext_new_tab = false;
           app.set_notification("Fetch error: thread disconnected".to_string());
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
       }
@@ -1102,11 +1139,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               app.set_notification(format!("Failed to fetch content: {e}"));
             }
           }
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
           app.reader_popup_rx = None;
           app.fulltext_loading = false;
           app.set_notification("Fetch error: thread disconnected".to_string());
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
       }
@@ -1140,24 +1179,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               app.repo_apply_file(path, name, result);
             }
           }
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
           log::debug!("repo_fetch drain: channel disconnected");
           app.repo_fetch_rx = None;
           app.set_repo_status("Fetch error: thread disconnected");
+          app.mark_dirty();
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
       }
     }
 
-    let t_draw = std::time::Instant::now();
-    terminal.draw(|frame| ui::draw(frame, &mut app))?;
-    let draw_ms = t_draw.elapsed().as_millis();
-    if draw_ms > 16 {
-      log::debug!("terminal.draw took {}ms (slow frame)", draw_ms);
+    // Gate the draw on the dirty flag. `check_needs_redraw` reads-and-clears
+    // in one call (cli-text-reader pattern). Idle frames cost ~0 work since
+    // every per-frame allocation lives inside `ui::draw`.
+    if app.check_needs_redraw() {
+      let t_draw = std::time::Instant::now();
+      terminal.draw(|frame| ui::draw(frame, &mut app))?;
+      let draw_ms = t_draw.elapsed().as_millis();
+      if draw_ms > 16 {
+        log::debug!("terminal.draw took {}ms (slow frame)", draw_ms);
+      }
     }
 
-    if event::poll(std::time::Duration::from_millis(16))? {
+    // Cadence: 16ms when something is animating or already dirty (so we
+    // process events at 60Hz during interaction), 250ms when truly idle (so
+    // CPU drops to near-zero and battery is preserved). Mirrors
+    // cli-text-reader/src/editor/display_loop.rs:233.
+    let timeout = if app.needs_redraw || app.has_active_animation() {
+      std::time::Duration::from_millis(16)
+    } else {
+      std::time::Duration::from_millis(250)
+    };
+
+    if event::poll(timeout)? {
       match event::read()? {
         Event::Key(key) => {
           if key.kind != KeyEventKind::Press {
@@ -1171,17 +1227,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.focused_pane
           );
           keys::dispatch(key, &mut app);
+          app.mark_dirty();
         }
         Event::Mouse(mouse) => {
           handle_mouse(mouse, &mut app, &terminal);
+          app.mark_dirty();
+        }
+        Event::Resize(_, _) => {
+          app.mark_dirty();
         }
         _ => {}
       }
     }
 
-    // Drain any stale events that built up during the draw call.
+    // Dispatch any stale events that arrived during the draw call. Previous
+    // behaviour silently discarded these via `let _ = event::read()`, which
+    // dropped user input on slow frames; now they go through the same path
+    // as the primary dispatch above.
     while event::poll(std::time::Duration::from_millis(0))? {
-      let _ = event::read();
+      match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+          keys::dispatch(key, &mut app);
+          app.mark_dirty();
+        }
+        Event::Mouse(mouse) => {
+          handle_mouse(mouse, &mut app, &terminal);
+          app.mark_dirty();
+        }
+        Event::Resize(_, _) => {
+          app.mark_dirty();
+        }
+        _ => {}
+      }
     }
 
     if app.should_quit {

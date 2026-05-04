@@ -130,6 +130,8 @@ fn note_to_item(note: OrNote) -> Option<FeedItem> {
     benchmark_results: vec![],
     full_content: None,
     source_name: "openreview".to_string(),
+    title_lower: String::new(),
+    authors_lower: Vec::new(),
   };
   item.signal = item.compute_signal();
   item.sanitize_in_place();

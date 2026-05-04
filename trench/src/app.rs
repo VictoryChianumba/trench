@@ -264,6 +264,25 @@ pub enum RepoEnterTarget {
 }
 
 pub struct App {
+  /// True when the UI needs to be redrawn. Set by `mark_dirty()`, cleared by
+  /// `check_needs_redraw()`. Mirrors the cli-text-reader pattern at
+  /// `cli-text-reader/src/editor/core.rs:277-286` so trench and the embedded
+  /// reader use identical redraw discipline. Defaults to `true` so the first
+  /// frame always draws.
+  pub needs_redraw: bool,
+
+  /// `url → index in self.items`. Maintained by the `process_incoming` dedup
+  /// loop and rebuilt by `rebuild_indices` after sort. Replaces the previous
+  /// `iter_mut().find(...)` linear scan, which was O(N×M) on every refresh.
+  pub url_index: HashMap<String, usize>,
+  /// `arxiv_id → index in self.items`. Same role as `url_index` for the
+  /// HF/arXiv-collapse path.
+  pub arxiv_id_index: HashMap<String, usize>,
+  /// Same as `url_index` but for `discovery_items`.
+  pub discovery_url_index: HashMap<String, usize>,
+  /// Same as `arxiv_id_index` but for `discovery_items`.
+  pub discovery_arxiv_id_index: HashMap<String, usize>,
+
   pub should_quit: bool,
   pub quit_popup_active: bool,
   pub quit_popup_kind: QuitPopupKind,
@@ -473,6 +492,11 @@ pub struct App {
 impl App {
   pub fn new() -> Self {
     Self {
+      needs_redraw: true,
+      url_index: HashMap::new(),
+      arxiv_id_index: HashMap::new(),
+      discovery_url_index: HashMap::new(),
+      discovery_arxiv_id_index: HashMap::new(),
       should_quit: false,
       quit_popup_active: false,
       quit_popup_kind: QuitPopupKind::default(),
@@ -769,6 +793,118 @@ impl App {
     secondaries.iter().map(|p| p.id).collect()
   }
 
+  /// Set the redraw flag. Cheap — call from any code path that mutates
+  /// state visible to the user. Mirrors `cli-text-reader::Editor::mark_dirty`
+  /// so the embedded reader and trench's outer UI use identical semantics.
+  pub fn mark_dirty(&mut self) {
+    self.needs_redraw = true;
+  }
+
+  /// Rebuild the `url_index` and `arxiv_id_index` HashMaps from `self.items`.
+  /// Call after any bulk mutation that invalidates positions: cache load,
+  /// `items.sort_by`, deletions. The intra-batch dedup in `process_incoming`
+  /// maintains the indices incrementally so this rebuild is rare.
+  pub fn rebuild_indices(&mut self) {
+    self.url_index.clear();
+    self.arxiv_id_index.clear();
+    self.url_index.reserve(self.items.len());
+    for (idx, item) in self.items.iter().enumerate() {
+      self.url_index.insert(item.url.clone(), idx);
+      if let Some(aid) = arxiv_id_from_url(&item.url) {
+        self.arxiv_id_index.insert(aid.to_string(), idx);
+      }
+    }
+  }
+
+  /// Same as `rebuild_indices` but for `discovery_items`.
+  pub fn rebuild_discovery_indices(&mut self) {
+    self.discovery_url_index.clear();
+    self.discovery_arxiv_id_index.clear();
+    self.discovery_url_index.reserve(self.discovery_items.len());
+    for (idx, item) in self.discovery_items.iter().enumerate() {
+      self.discovery_url_index.insert(item.url.clone(), idx);
+      if let Some(aid) = arxiv_id_from_url(&item.url) {
+        self.discovery_arxiv_id_index.insert(aid.to_string(), idx);
+      }
+    }
+  }
+
+  /// Atomically read and clear the redraw flag. Returns `true` if a redraw
+  /// is needed for this frame.
+  pub fn check_needs_redraw(&mut self) -> bool {
+    let needs = self.needs_redraw;
+    self.needs_redraw = false;
+    needs
+  }
+
+  /// True if any continuous animation or background activity is in flight
+  /// that requires fast (~16ms) event-poll cadence. Used by the main loop
+  /// to decide whether to block long (idle) or short (animating).
+  ///
+  /// Self-stopping animations covered:
+  /// - `is_loading` — spinner needs to tick while a fetch cycle is active
+  /// - `is_refreshing` — same
+  /// - any open `repo_context.scroll_velocity` non-zero (momentum scroll)
+  /// - `discovery_loading` — discovery agent in flight
+  /// - `settings_save_time` — TTL window for the "Saved." indicator
+  pub fn has_active_animation(&self) -> bool {
+    if self.is_loading || self.is_refreshing || self.discovery_loading {
+      return true;
+    }
+    if self.settings_save_time.is_some() {
+      return true;
+    }
+    if self
+      .repo_context
+      .as_ref()
+      .map(|c| c.scroll_velocity.abs() >= 0.5)
+      .unwrap_or(false)
+    {
+      return true;
+    }
+    false
+  }
+
+  /// Length of the currently-visible item slice. Cheaper than
+  /// `visible_items().len()` because it skips the per-call `Vec<&FeedItem>`
+  /// allocation. Use this everywhere a length-only check is needed.
+  pub fn visible_count(&self) -> usize {
+    {
+      let cache = self.visible_cache.borrow();
+      if let Some((tab, ref indices)) = *cache {
+        if tab == self.feed_tab {
+          return indices.len();
+        }
+      }
+    }
+    // Cache miss: fall through and use visible_items to populate it.
+    self.visible_items().len()
+  }
+
+  /// Random access into the currently-visible items by display position.
+  /// Cheaper than `visible_items().into_iter().nth(idx)` since it skips the
+  /// per-call `Vec<&FeedItem>` allocation when the cache is warm. Falls back
+  /// to a full `visible_items()` invocation on cold cache so callers don't
+  /// need to know which path they're on.
+  pub fn visible_get(&self, idx: usize) -> Option<&FeedItem> {
+    // Try the warm-cache fast path first.
+    {
+      let cache = self.visible_cache.borrow();
+      if let Some((tab, indices)) = cache.as_ref() {
+        if *tab == self.feed_tab {
+          let item_idx = *indices.get(idx)?;
+          let items = self.items_for_tab();
+          return items.get(item_idx);
+        }
+      }
+    }
+    // Cold cache: populate via visible_items, then retry. visible_items
+    // borrows the cache mutably so the immutable borrow above must be
+    // dropped before we call it (the explicit block above ensures that).
+    let v = self.visible_items();
+    v.into_iter().nth(idx)
+  }
+
   /// Items visible after applying search and category filters.
   pub fn visible_items(&self) -> Vec<&FeedItem> {
     {
@@ -832,8 +968,8 @@ impl App {
           }
         }
         if !q.is_empty()
-          && !item.title.to_lowercase().contains(&q)
-          && !item.authors.iter().any(|a| a.to_lowercase().contains(&q))
+          && !item.title_lower.contains(&q)
+          && !item.authors_lower.iter().any(|a| a.contains(&q))
         {
           return false;
         }
@@ -930,7 +1066,7 @@ impl App {
   }
 
   pub fn move_down(&mut self) {
-    let len = self.visible_items().len();
+    let len = self.visible_count();
     if len == 0 {
       return;
     }
@@ -955,7 +1091,7 @@ impl App {
   }
 
   pub fn go_to_bottom(&mut self) {
-    let len = self.visible_items().len();
+    let len = self.visible_count();
     if len > 0 {
       self.set_active_selected_index(len - 1);
     }
@@ -984,7 +1120,7 @@ impl App {
   }
 
   pub fn selected_item(&self) -> Option<&FeedItem> {
-    self.visible_items().into_iter().nth(self.active_selected_index())
+    self.visible_get(self.active_selected_index())
   }
 
   /// Update library_selected_urls from anchor/cursor positions in the visible
@@ -1459,7 +1595,13 @@ impl App {
   pub fn process_incoming(&mut self) {
     use std::sync::mpsc::TryRecvError;
 
-    self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    // Spinner only ticks when something is actually loading. Without this
+    // gate, the wrapping increment fires every loop iteration and would
+    // perpetually re-set `needs_redraw` even on idle.
+    if self.is_loading {
+      self.spinner_frame = self.spinner_frame.wrapping_add(1);
+      self.mark_dirty();
+    }
     self.poll_detect_result();
     self.process_incoming_discovery();
 
@@ -1467,6 +1609,7 @@ impl App {
     if let Some(t) = self.settings_save_time {
       if t.elapsed().as_secs() >= 2 {
         self.settings_save_time = None;
+        self.mark_dirty();
       }
     }
 
@@ -1510,25 +1653,20 @@ impl App {
               item.workflow_state = *state;
             }
 
-            // URL dedup: overwrite cached item with freshly fetched data.
-            // workflow_state was already set from persisted_states above.
-            if let Some(existing) =
-              self.items.iter_mut().find(|i| i.url == item.url)
-            {
-              *existing = item;
+            // URL dedup via index — O(1) replaces the prior O(N) linear
+            // scan that fired ~50× per refresh × ~2,600 items.
+            if let Some(&pos) = self.url_index.get(&item.url) {
+              self.items[pos] = item;
               continue;
             }
 
-            // ArXiv ID dedup: collapse HF and arXiv entries for the same paper.
-            // Keep the arXiv entry as primary.
-            let aid = arxiv_id_from_url(&item.url);
-            if let Some(ref aid) = aid {
-              let pos = self.items.iter().position(|i| {
-                arxiv_id_from_url(&i.url).as_deref() == Some(aid.as_str())
-              });
-              if let Some(pos) = pos {
+            // ArXiv ID dedup: collapse HF and arXiv entries for the same
+            // paper. Keep the arXiv entry as primary. Same O(1) lookup.
+            if let Some(aid) = arxiv_id_from_url(&item.url) {
+              if let Some(&pos) = self.arxiv_id_index.get(aid) {
                 if item.source_platform == SourcePlatform::ArXiv {
                   // Incoming is the canonical arXiv entry — replace HF stub.
+                  // Position doesn't change, indices stay valid.
                   let ws = self.items[pos].workflow_state;
                   self.items[pos] = item;
                   self.items[pos].workflow_state = ws;
@@ -1538,6 +1676,13 @@ impl App {
               }
             }
 
+            // New item: push and update indices incrementally so the next
+            // iteration of this same loop sees it for intra-batch dedup.
+            let new_idx = self.items.len();
+            self.url_index.insert(item.url.clone(), new_idx);
+            if let Some(aid) = arxiv_id_from_url(&item.url) {
+              self.arxiv_id_index.insert(aid.to_string(), new_idx);
+            }
             self.items.push(item);
           }
         }
@@ -1558,11 +1703,18 @@ impl App {
 
     if had_items {
       self.items.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+      // Sort invalidated every position; indices must reflect the new order.
+      self.rebuild_indices();
       self.invalidate_visible_cache();
       crate::store::cache::save(&self.items);
       if was_empty {
         self.list_offset = 0;
       }
+      self.mark_dirty();
+    }
+    if disconnected {
+      // Loading-state change is visible in the status bar.
+      self.mark_dirty();
     }
   }
 
@@ -1589,6 +1741,8 @@ impl App {
       self.discovery_rx = None;
       self.discovery_loading = false;
     }
+
+    let had_messages = !messages.is_empty();
 
     for msg in messages {
       match msg {
@@ -1638,6 +1792,11 @@ impl App {
         }
       }
     }
+
+    // Any of the above arms mutated discovery state visible to the user.
+    if had_messages || disconnected {
+      self.mark_dirty();
+    }
   }
 
   fn merge_discovery_items(&mut self, items: Vec<FeedItem>) {
@@ -1646,19 +1805,15 @@ impl App {
         item.workflow_state = *state;
       }
 
-      if let Some(existing) =
-        self.discovery_items.iter_mut().find(|i| i.url == item.url)
-      {
-        *existing = item;
+      // URL dedup via index — O(1).
+      if let Some(&pos) = self.discovery_url_index.get(&item.url) {
+        self.discovery_items[pos] = item;
         continue;
       }
 
-      let aid = arxiv_id_from_url(&item.url);
-      if let Some(ref aid) = aid {
-        let pos = self.discovery_items.iter().position(|i| {
-          arxiv_id_from_url(&i.url).as_deref() == Some(aid.as_str())
-        });
-        if let Some(pos) = pos {
+      // ArXiv ID dedup — O(1).
+      if let Some(aid) = arxiv_id_from_url(&item.url) {
+        if let Some(&pos) = self.discovery_arxiv_id_index.get(aid) {
           if item.source_platform == SourcePlatform::ArXiv {
             let ws = self.discovery_items[pos].workflow_state;
             self.discovery_items[pos] = item;
@@ -1668,9 +1823,17 @@ impl App {
         }
       }
 
+      // New item: push and update indices incrementally.
+      let new_idx = self.discovery_items.len();
+      self.discovery_url_index.insert(item.url.clone(), new_idx);
+      if let Some(aid) = arxiv_id_from_url(&item.url) {
+        self.discovery_arxiv_id_index.insert(aid.to_string(), new_idx);
+      }
       self.discovery_items.push(item);
     }
     self.discovery_items.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+    // Sort invalidated positions; rebuild for correctness.
+    self.rebuild_discovery_indices();
     self.invalidate_visible_cache();
   }
 
@@ -1846,6 +2009,90 @@ fn save_discovery_items(_items: &[FeedItem]) {
 mod tests {
   use super::*;
 
+  #[test]
+  fn needs_redraw_defaults_to_true_so_first_frame_draws() {
+    let app = App::new();
+    assert!(app.needs_redraw);
+  }
+
+  #[test]
+  fn check_needs_redraw_reads_and_clears() {
+    let mut app = App::new();
+    assert!(app.check_needs_redraw(), "first call returns true");
+    assert!(
+      !app.check_needs_redraw(),
+      "second call returns false (flag cleared)"
+    );
+    app.mark_dirty();
+    assert!(app.check_needs_redraw(), "mark_dirty re-arms the flag");
+    assert!(!app.check_needs_redraw(), "and clears again on the next read");
+  }
+
+  #[test]
+  fn mark_dirty_is_idempotent() {
+    let mut app = App::new();
+    let _ = app.check_needs_redraw(); // clear
+    app.mark_dirty();
+    app.mark_dirty();
+    app.mark_dirty();
+    assert!(app.check_needs_redraw(), "still just one redraw needed");
+    assert!(!app.check_needs_redraw());
+  }
+
+  #[test]
+  fn has_active_animation_false_on_idle_app() {
+    let mut app = App::new();
+    let _ = app.check_needs_redraw();
+    // Default App: not loading, not refreshing, no save TTL, no repo ctx,
+    // no discovery — should be inert.
+    assert!(!app.has_active_animation());
+  }
+
+  #[test]
+  fn rebuild_indices_maps_every_item() {
+    let mut app = App::new();
+    app.items = mock_items();
+    let item_count = app.items.len();
+    app.rebuild_indices();
+    assert_eq!(app.url_index.len(), item_count);
+    // Every item's URL should resolve back to its position.
+    for (idx, item) in app.items.iter().enumerate() {
+      assert_eq!(app.url_index.get(&item.url).copied(), Some(idx));
+    }
+    // arxiv_id_index covers only items whose URL has an arxiv ID.
+    for (idx, item) in app.items.iter().enumerate() {
+      if let Some(aid) = arxiv_id_from_url(&item.url) {
+        assert_eq!(app.arxiv_id_index.get(aid).copied(), Some(idx));
+      }
+    }
+  }
+
+  #[test]
+  fn rebuild_indices_clears_stale_entries() {
+    let mut app = App::new();
+    app.items = mock_items();
+    app.rebuild_indices();
+    let prior = app.url_index.len();
+    // Drop half the items, rebuild — the index should shrink to match.
+    app.items.truncate(prior / 2);
+    app.rebuild_indices();
+    assert_eq!(app.url_index.len(), prior / 2);
+  }
+
+  #[test]
+  fn has_active_animation_true_when_loading() {
+    let mut app = App::new();
+    let _ = app.check_needs_redraw();
+    app.is_loading = true;
+    assert!(app.has_active_animation());
+    app.is_loading = false;
+    app.is_refreshing = true;
+    assert!(app.has_active_animation());
+    app.is_refreshing = false;
+    app.discovery_loading = true;
+    assert!(app.has_active_animation());
+  }
+
   #[allow(dead_code)]
   fn mock_items() -> Vec<FeedItem> {
     vec![
@@ -1870,6 +2117,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "2".into(),
@@ -1892,6 +2141,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "3".into(),
@@ -1914,6 +2165,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "4".into(),
@@ -1936,6 +2189,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "5".into(),
@@ -1958,6 +2213,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "6".into(),
@@ -1980,6 +2237,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "7".into(),
@@ -2002,6 +2261,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "8".into(),
@@ -2024,6 +2285,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "9".into(),
@@ -2048,6 +2311,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "10".into(),
@@ -2070,6 +2335,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "11".into(),
@@ -2092,6 +2359,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "12".into(),
@@ -2116,6 +2385,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "13".into(),
@@ -2139,6 +2410,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "14".into(),
@@ -2161,6 +2434,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
       FeedItem {
         id: "15".into(),
@@ -2183,6 +2458,8 @@ mod tests {
         benchmark_results: vec![],
         full_content: None,
         source_name: String::new(),
+        title_lower: String::new(),
+        authors_lower: Vec::new(),
       },
     ]
   }

@@ -84,6 +84,8 @@ mod tests {
       benchmark_results: vec![],
       full_content: Some("body\x1b[2Kclear".into()),
       source_name: "arxiv".into(),
+      title_lower: String::new(),
+      authors_lower: Vec::new(),
     };
     let json = serde_json::to_vec_pretty(&vec![raw_item]).unwrap();
 
