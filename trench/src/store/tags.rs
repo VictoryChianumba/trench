@@ -14,7 +14,7 @@ pub fn save(tags: &ItemTags) {
   if let Some(parent) = path.parent() {
     let _ = fs::create_dir_all(parent);
   }
-  if let Ok(json) = serde_json::to_vec_pretty(tags) {
+  if let Ok(json) = serde_json::to_vec(tags) {
     let _ = super::atomic_write(&path, &json);
   }
 }

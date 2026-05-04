@@ -85,7 +85,7 @@ pub fn load_index() -> ChatIndex {
 
 pub fn save_index(index: &ChatIndex) -> Result<()> {
   ensure_dir()?;
-  let data = serde_json::to_string_pretty(index)?;
+  let data = serde_json::to_string(index)?;
   atomic_write(&index_path(), data.as_bytes())?;
   Ok(())
 }
@@ -106,7 +106,7 @@ pub fn load_session(id: &str) -> Option<ChatSession> {
 pub fn save_session(session: &ChatSession) -> Result<()> {
   validate_id(&session.id)?;
   ensure_dir()?;
-  let data = serde_json::to_string_pretty(session)?;
+  let data = serde_json::to_string(session)?;
   atomic_write(&session_path(&session.id), data.as_bytes())?;
   Ok(())
 }

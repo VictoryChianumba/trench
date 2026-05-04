@@ -35,7 +35,7 @@ pub fn save(items: &[FeedItem]) {
     let _ = fs::create_dir_all(parent);
   }
 
-  if let Ok(json) = serde_json::to_vec_pretty(items) {
+  if let Ok(json) = serde_json::to_vec(items) {
     let _ = super::atomic_write(&path, &json);
   }
 }

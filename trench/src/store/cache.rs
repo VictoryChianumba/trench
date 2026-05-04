@@ -1,7 +1,18 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::Duration;
 
 use crate::models::FeedItem;
+
+/// Debounce window for the background writer. The writer collects `queue_save`
+/// messages within this window and writes only the latest snapshot to disk —
+/// so a burst of 10 process_incoming calls during a refresh produces 1 disk
+/// write, not 10. Tuned long enough to coalesce a typical refresh batch but
+/// short enough that quit-without-flush would lose ≤ 1 batch.
+const DEBOUNCE_MS: u64 = 500;
 
 fn cache_path() -> Option<PathBuf> {
   let mut p = std::env::var_os("HOME").map(PathBuf::from)?;
@@ -33,6 +44,9 @@ pub fn load() -> Vec<FeedItem> {
   items
 }
 
+/// Synchronous serialize + atomic disk write. Used by the background writer
+/// thread and by `flush_blocking` on shutdown. UI-thread callers should
+/// prefer `queue_save` to avoid hitching during a refresh batch.
 pub fn save(items: &[FeedItem]) {
   let path = match cache_path() {
     Some(p) => p,
@@ -43,9 +57,85 @@ pub fn save(items: &[FeedItem]) {
     let _ = fs::create_dir_all(parent);
   }
 
-  if let Ok(json) = serde_json::to_vec_pretty(items) {
+  if let Ok(json) = serde_json::to_vec(items) {
     let _ = super::atomic_write(&path, &json);
     crate::store::set_private(&path);
+  }
+}
+
+enum WriterMsg {
+  Items(Vec<FeedItem>),
+  /// On receipt, flush any pending snapshot, then ack so the caller can
+  /// proceed (used at process shutdown).
+  Flush(Sender<()>),
+}
+
+static WRITER_TX: OnceLock<Sender<WriterMsg>> = OnceLock::new();
+
+fn writer_handle() -> &'static Sender<WriterMsg> {
+  WRITER_TX.get_or_init(|| {
+    let (tx, rx) = mpsc::channel::<WriterMsg>();
+    let _ = thread::Builder::new()
+      .name("trench-cache-writer".into())
+      .spawn(move || {
+        // Single-slot coalesce: latest snapshot wins. While `pending` is
+        // Some we cap waits at DEBOUNCE_MS so a burst flushes promptly;
+        // while empty we block forever to avoid spinning.
+        let mut pending: Option<Vec<FeedItem>> = None;
+        loop {
+          let msg = if pending.is_some() {
+            match rx.recv_timeout(Duration::from_millis(DEBOUNCE_MS)) {
+              Ok(m) => Some(m),
+              Err(RecvTimeoutError::Timeout) => None,
+              Err(RecvTimeoutError::Disconnected) => {
+                if let Some(items) = pending.take() {
+                  save(&items);
+                }
+                return;
+              }
+            }
+          } else {
+            match rx.recv() {
+              Ok(m) => Some(m),
+              Err(_) => return,
+            }
+          };
+          match msg {
+            Some(WriterMsg::Items(items)) => {
+              pending = Some(items);
+            }
+            Some(WriterMsg::Flush(ack)) => {
+              if let Some(items) = pending.take() {
+                save(&items);
+              }
+              let _ = ack.send(());
+            }
+            None => {
+              // Debounce window expired — flush.
+              if let Some(items) = pending.take() {
+                save(&items);
+              }
+            }
+          }
+        }
+      });
+    tx
+  })
+}
+
+/// Hand a snapshot off to the background writer. Returns immediately.
+/// Multiple calls within DEBOUNCE_MS coalesce into a single disk write.
+pub fn queue_save(items: Vec<FeedItem>) {
+  let _ = writer_handle().send(WriterMsg::Items(items));
+}
+
+/// Wait for the writer to finish any pending work. Call once on shutdown so
+/// the on-disk cache reflects the final in-memory state. Bounded so a wedged
+/// I/O can't hang process exit.
+pub fn flush_blocking() {
+  let (ack_tx, ack_rx) = mpsc::channel();
+  if writer_handle().send(WriterMsg::Flush(ack_tx)).is_ok() {
+    let _ = ack_rx.recv_timeout(Duration::from_secs(5));
   }
 }
 
@@ -87,7 +177,7 @@ mod tests {
       title_lower: String::new(),
       authors_lower: Vec::new(),
     };
-    let json = serde_json::to_vec_pretty(&vec![raw_item]).unwrap();
+    let json = serde_json::to_vec(&vec![raw_item]).unwrap();
 
     // Set HOME to a temp dir so cache_path() resolves there. Running this in
     // serial would be safer; for a single test it's fine since other tests

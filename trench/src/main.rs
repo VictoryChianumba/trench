@@ -1277,6 +1277,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
+  // Drain any pending cache write the background writer hasn't flushed yet,
+  // so the on-disk cache.json reflects the final in-memory state.
+  store::cache::flush_blocking();
+
   store::save_ui(&store::UiState {
     last_read:        app.last_read.clone(),
     last_read_source: app.last_read_source.clone(),

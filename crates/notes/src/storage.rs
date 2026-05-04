@@ -99,7 +99,7 @@ pub fn save_note(note: &Note) -> anyhow::Result<()> {
   validate_id(&note.note_id)?;
   let dir = notes_dir();
   std::fs::create_dir_all(&dir)?;
-  let bytes = serde_json::to_vec_pretty(note)?;
+  let bytes = serde_json::to_vec(note)?;
   atomic_write(&note_path(&note.note_id), &bytes)?;
   Ok(())
 }

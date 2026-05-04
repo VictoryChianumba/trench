@@ -1718,7 +1718,9 @@ impl App {
       // Sort invalidated every position; indices must reflect the new order.
       self.rebuild_indices();
       self.invalidate_visible_cache();
-      crate::store::cache::save(&self.items);
+      // Hand off to the background writer — UI thread used to hitch for
+      // 100-300 ms here while the 3.8 MB cache.json was serialized + fsynced.
+      crate::store::cache::queue_save(self.items.clone());
       if was_empty {
         self.list_offset = 0;
       }

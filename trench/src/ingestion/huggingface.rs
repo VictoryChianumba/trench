@@ -622,7 +622,7 @@ fn save_hf_cache(cache: &HashMap<String, HfRepoCacheEntry>) {
   if let Some(parent) = path.parent() {
     let _ = fs::create_dir_all(parent);
   }
-  if let Ok(json) = serde_json::to_vec_pretty(cache) {
+  if let Ok(json) = serde_json::to_vec(cache) {
     if let Err(e) = fs::write(&path, &json) {
       log::warn!("hf repo cache: save failed — {e}");
     } else {

@@ -1,13 +1,28 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 static DEBUG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
+/// Memoized check for `HYGG_DEBUG`. The original implementation called
+/// `std::env::var("HYGG_DEBUG").is_ok()` inside every `debug_log` call —
+/// that's a syscall + heap allocation evaluated at ~363 callsites, several
+/// of them firing per redraw cycle.
+///
+/// `OnceLock<bool>` resolves the env var exactly once on first read; every
+/// subsequent call is a pointer load. The format-and-allocate cost at
+/// callsites still happens (those would need per-call macro gating to
+/// eliminate), but the dominant cost — repeated env-lookup syscalls — is
+/// gone everywhere.
+pub fn is_enabled() -> bool {
+  static ENABLED: OnceLock<bool> = OnceLock::new();
+  *ENABLED.get_or_init(|| std::env::var_os("HYGG_DEBUG").is_some())
+}
+
 pub fn init_debug_logging() -> Result<(), Box<dyn std::error::Error>> {
   eprintln!("DEBUG: init_debug_logging called");
-  if std::env::var("HYGG_DEBUG").is_ok() {
+  if is_enabled() {
     eprintln!("DEBUG: HYGG_DEBUG is set");
     let mut debug_dir =
       dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -53,7 +68,7 @@ pub fn init_debug_logging() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn debug_log(module: &str, message: &str) {
-  if std::env::var("HYGG_DEBUG").is_ok() {
+  if is_enabled() {
     let timestamp = chrono::Utc::now().format("%H:%M:%S%.3f");
     let log_line = format!("[{timestamp}] [{module}] {message}");
 

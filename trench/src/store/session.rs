@@ -23,7 +23,7 @@ pub fn save(session: &SessionHistory) {
   if let Some(parent) = path.parent() {
     let _ = fs::create_dir_all(parent);
   }
-  if let Ok(json) = serde_json::to_vec_pretty(session) {
+  if let Ok(json) = serde_json::to_vec(session) {
     let _ = super::atomic_write(&path, &json);
   }
 }

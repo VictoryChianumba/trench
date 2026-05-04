@@ -107,7 +107,7 @@ pub fn save(state: &HashMap<String, WorkflowState>) {
     let _ = fs::create_dir_all(parent);
   }
 
-  if let Ok(json) = serde_json::to_vec_pretty(state) {
+  if let Ok(json) = serde_json::to_vec(state) {
     let _ = atomic_write(&path, &json);
     set_private(&path);
   }
@@ -153,7 +153,7 @@ pub fn save_ui(state: &UiState) {
   if let Some(parent) = path.parent() {
     let _ = fs::create_dir_all(parent);
   }
-  if let Ok(json) = serde_json::to_vec_pretty(state) {
+  if let Ok(json) = serde_json::to_vec(state) {
     let _ = atomic_write(&path, &json);
     set_private(&path);
   }

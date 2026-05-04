@@ -20,8 +20,11 @@ impl Editor {
       let line_idx = self.offset + i;
 
       if line_idx < self.lines.len() {
-        // We have a real line to display
-        let line = self.lines[line_idx].clone();
+        // We have a real line to display.
+        // Borrow rather than clone — the &self callees below all accept
+        // `&str`, so the owned String the previous code allocated per
+        // visible row per redraw was pure waste.
+        let line: &str = &self.lines[line_idx];
 
         // Highlight the current line first
         let is_current_line =
@@ -38,7 +41,7 @@ impl Editor {
           if self.render_combined_highlights(
             stdout,
             i,
-            &line,
+            line,
             center_offset_string,
           )? {
             continue;
@@ -47,7 +50,7 @@ impl Editor {
 
         // Try highlighting selection only
         if has_selection
-          && self.highlight_selection(stdout, i, &line, center_offset_string)?
+          && self.highlight_selection(stdout, i, line, center_offset_string)?
         {
           continue;
         }
@@ -57,7 +60,7 @@ impl Editor {
           && self.highlight_search_match(
             stdout,
             i,
-            &line,
+            line,
             center_offset_string,
           )?
         {
@@ -69,7 +72,7 @@ impl Editor {
           && self.highlight_persistent(
             stdout,
             i,
-            &line,
+            line,
             center_offset_string,
           )?
         {
@@ -155,8 +158,8 @@ impl Editor {
       let line_idx = self.offset + i;
 
       if line_idx < self.lines.len() {
-        // We have a real line to display
-        let line = self.lines[line_idx].clone();
+        // Borrow rather than clone — see draw_content above.
+        let line: &str = &self.lines[line_idx];
 
         // Highlight the current line first
         let is_current_line =
@@ -173,7 +176,7 @@ impl Editor {
           if self.render_combined_highlights_buffered(
             buffer,
             i,
-            &line,
+            line,
             center_offset_string,
           )? {
             continue;
@@ -185,7 +188,7 @@ impl Editor {
           && self.highlight_selection_buffered(
             buffer,
             i,
-            &line,
+            line,
             center_offset_string,
           )?
         {
@@ -197,7 +200,7 @@ impl Editor {
           && self.highlight_search_match_buffered(
             buffer,
             i,
-            &line,
+            line,
             center_offset_string,
           )?
         {
@@ -209,7 +212,7 @@ impl Editor {
           && self.highlight_persistent_buffered(
             buffer,
             i,
-            &line,
+            line,
             center_offset_string,
           )?
         {

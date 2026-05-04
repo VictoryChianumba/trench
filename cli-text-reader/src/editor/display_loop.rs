@@ -17,25 +17,32 @@ impl Editor {
     let mut first_iteration = true;
 
     loop {
-      self.debug_log(&format!(
-        "Main loop iteration - buffers: {}, active: {}, mode: {:?}",
-        self.buffers.len(),
-        self.active_buffer,
-        self.view_mode
-      ));
-      self.debug_log(&format!(
-        "  Editor mode: {:?}, command_buffer: '{}'",
-        self.editor_state.mode, self.editor_state.command_buffer
-      ));
-      self.debug_log(&format!(
-        "  Active buffer lines: {}, cursor: ({}, {}), offset: {}, needs_redraw: {}, cursor_moved: {}",
-        self.lines.len(),
-        self.cursor_x,
-        self.cursor_y,
-        self.offset,
-        self.needs_redraw,
-        self.cursor_moved
-      ));
+      // These three debug_log sites fire every main-loop iteration and
+      // each builds a String via `format!()`. Gate the entire block on
+      // `is_enabled()` so the format work is skipped when debug logging
+      // is off (the common case). Closes the per-frame allocation cost
+      // the perf agent flagged at this exact location.
+      if crate::debug::is_enabled() {
+        self.debug_log(&format!(
+          "Main loop iteration - buffers: {}, active: {}, mode: {:?}",
+          self.buffers.len(),
+          self.active_buffer,
+          self.view_mode
+        ));
+        self.debug_log(&format!(
+          "  Editor mode: {:?}, command_buffer: '{}'",
+          self.editor_state.mode, self.editor_state.command_buffer
+        ));
+        self.debug_log(&format!(
+          "  Active buffer lines: {}, cursor: ({}, {}), offset: {}, needs_redraw: {}, cursor_moved: {}",
+          self.lines.len(),
+          self.cursor_x,
+          self.cursor_y,
+          self.offset,
+          self.needs_redraw,
+          self.cursor_moved
+        ));
+      }
 
       // Only redraw if needed
       if self.check_needs_redraw() || first_iteration {
