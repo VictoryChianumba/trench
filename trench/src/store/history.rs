@@ -23,7 +23,7 @@ pub fn save(entries: &[HistoryEntry]) {
     entries
   };
   if let Ok(json) = serde_json::to_vec_pretty(trimmed) {
-    let _ = fs::write(&path, json);
+    let _ = super::atomic_write(&path, &json);
   }
 }
 

@@ -6,8 +6,10 @@ pub mod session;
 pub mod tags;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::app::NotesTab;
 use crate::models::WorkflowState;
@@ -20,6 +22,36 @@ pub(crate) fn set_private(path: &PathBuf) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
   }
   let _ = path; // suppress unused warning on non-Unix
+}
+
+/// Crash-safe write: writes `bytes` to `<path>.tmp`, fsyncs, then renames
+/// onto `path`. A panic, SIGINT, or power loss between the two steps either
+/// leaves the original file unchanged or replaces it atomically — never
+/// truncated. Replaces every prior `fs::write(path, bytes)` callsite in the
+/// store layer.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+  let mut tmp_name: OsString = path.as_os_str().to_owned();
+  tmp_name.push(".tmp");
+  let tmp_path = PathBuf::from(tmp_name);
+
+  // Best-effort cleanup of any stale tmp file from a previous crash.
+  let _ = fs::remove_file(&tmp_path);
+
+  {
+    let mut f = fs::File::create(&tmp_path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+  }
+
+  // Inherit 0o600 mode immediately so the brief 0644 window between rename
+  // and the caller's `set_private` no longer exists.
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600));
+  }
+
+  fs::rename(&tmp_path, path)
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -76,7 +108,7 @@ pub fn save(state: &HashMap<String, WorkflowState>) {
   }
 
   if let Ok(json) = serde_json::to_vec_pretty(state) {
-    let _ = fs::write(&path, json);
+    let _ = atomic_write(&path, &json);
     set_private(&path);
   }
 }
@@ -122,7 +154,61 @@ pub fn save_ui(state: &UiState) {
     let _ = fs::create_dir_all(parent);
   }
   if let Ok(json) = serde_json::to_vec_pretty(state) {
-    let _ = fs::write(&path, json);
+    let _ = atomic_write(&path, &json);
     set_private(&path);
+  }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+  use super::atomic_write;
+  use std::fs;
+
+  #[test]
+  fn writes_bytes_and_cleans_tmp() {
+    let dir = std::env::temp_dir().join(format!(
+      "trench_atomic_write_test_{}",
+      std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("payload.json");
+    let tmp = dir.join("payload.json.tmp");
+
+    atomic_write(&path, b"hello world").expect("write ok");
+    assert_eq!(fs::read(&path).unwrap(), b"hello world");
+    assert!(!tmp.exists(), "tmp sidecar should be renamed away");
+    let _ = fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn overwrite_replaces_existing_content() {
+    let dir = std::env::temp_dir().join(format!(
+      "trench_atomic_overwrite_test_{}",
+      std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("payload.json");
+    fs::write(&path, b"original").unwrap();
+
+    atomic_write(&path, b"replaced").expect("write ok");
+    assert_eq!(fs::read(&path).unwrap(), b"replaced");
+    let _ = fs::remove_dir_all(&dir);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn produces_owner_only_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!(
+      "trench_atomic_perms_test_{}",
+      std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("payload.json");
+
+    atomic_write(&path, b"sensitive").expect("write ok");
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "atomic_write should produce 0600");
+    let _ = fs::remove_dir_all(&dir);
   }
 }

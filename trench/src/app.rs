@@ -406,7 +406,7 @@ pub struct App {
   pub reader_popup_rx: Option<Receiver<Result<Vec<String>, String>>>,
   pub reader_popup_editor: Option<cli_text_reader::Editor>,
 
-  // Secondary split view (A2 — Ldr+v cycles three states)
+  // Secondary split view (A2 — Ldr+f cycles three reader/feed states)
   // State 1: normal feed (reader_split_active=false, reader_dual_active=false)
   // State 2: feed 40% | reader 60%  (reader_split_active=true)
   // State 3: reader 50% | reader 50% + persistent bottom pane (reader_dual_active=true)
@@ -419,7 +419,7 @@ pub struct App {
   pub fulltext_new_tab: bool,
   // True while waiting for [1]/[2] to choose which reader window gets a new tab.
   pub tab_window_prompt_active: bool,
-  // Bottom pane in State 3 (summoned by Ldr+v, dismissed by q/Esc)
+  // Bottom pane in State 3 (summoned by Ldr+f, dismissed by q/Esc)
   pub reader_bottom_open: bool,      // pane is visible
   pub reader_bottom_focused: bool,   // pane has keyboard focus
   pub reader_bottom_details: bool,   // showing details (true) or feed list (false)

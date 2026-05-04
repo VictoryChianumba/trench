@@ -24,13 +24,13 @@ pub fn save(session: &SessionHistory) {
     let _ = fs::create_dir_all(parent);
   }
   if let Ok(json) = serde_json::to_vec_pretty(session) {
-    let _ = fs::write(&path, json);
+    let _ = super::atomic_write(&path, &json);
   }
 }
 
 pub fn clear() {
   if let Some(path) = path() {
-    let _ = fs::write(&path, b"{}");
+    let _ = super::atomic_write(&path, b"{}");
   }
 }
 

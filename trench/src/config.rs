@@ -336,7 +336,7 @@ impl Config {
       let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_vec_pretty(self) {
-      if let Err(e) = std::fs::write(&path, &json) {
+      if let Err(e) = crate::store::atomic_write(&path, &json) {
         log::error!("config: failed to write {}: {e}", path.display());
       } else {
         crate::store::set_private(&path);

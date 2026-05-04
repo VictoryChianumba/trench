@@ -15,7 +15,7 @@ pub fn save(tags: &ItemTags) {
     let _ = fs::create_dir_all(parent);
   }
   if let Ok(json) = serde_json::to_vec_pretty(tags) {
-    let _ = fs::write(&path, json);
+    let _ = super::atomic_write(&path, &json);
   }
 }
 

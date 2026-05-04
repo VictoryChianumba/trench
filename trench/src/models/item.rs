@@ -69,9 +69,7 @@ impl SignalLevel {
   }
 }
 
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowState {
   Inbox,
@@ -87,6 +85,81 @@ impl WorkflowState {
       Self::Queued => "queued",
       Self::DeepRead => "read",
       Self::Archived => "archived",
+    }
+  }
+}
+
+// Manual Deserialize that maps unknown values (legacy variants like
+// `"skimmed"`, or anything else) to `Inbox`. This prevents a single removed
+// or renamed enum variant from failing to deserialize the whole state file
+// and silently zeroing user workflow tags via `unwrap_or_default()`.
+impl<'de> serde::Deserialize<'de> for WorkflowState {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let s = String::deserialize(deserializer)?;
+    Ok(match s.as_str() {
+      "inbox" => Self::Inbox,
+      "queued" => Self::Queued,
+      "deepread" => Self::DeepRead,
+      "archived" => Self::Archived,
+      _ => Self::Inbox,
+    })
+  }
+}
+
+#[cfg(test)]
+mod workflow_state_tests {
+  use super::WorkflowState;
+
+  #[test]
+  fn deserializes_known_variants() {
+    let cases = [
+      ("\"inbox\"", WorkflowState::Inbox),
+      ("\"queued\"", WorkflowState::Queued),
+      ("\"deepread\"", WorkflowState::DeepRead),
+      ("\"archived\"", WorkflowState::Archived),
+    ];
+    for (json, expected) in cases {
+      let got: WorkflowState = serde_json::from_str(json).unwrap();
+      assert_eq!(got, expected, "input: {json}");
+    }
+  }
+
+  #[test]
+  fn deserializes_legacy_skimmed_to_inbox() {
+    let got: WorkflowState = serde_json::from_str("\"skimmed\"").unwrap();
+    assert_eq!(got, WorkflowState::Inbox);
+  }
+
+  #[test]
+  fn deserializes_unknown_to_inbox() {
+    for s in ["\"garbage\"", "\"\"", "\"INBOX\"", "\"future_variant\""] {
+      let got: WorkflowState = serde_json::from_str(s).unwrap();
+      assert_eq!(got, WorkflowState::Inbox, "input: {s}");
+    }
+  }
+
+  #[test]
+  fn serializes_to_lowercase_variant_name() {
+    assert_eq!(serde_json::to_string(&WorkflowState::Inbox).unwrap(), "\"inbox\"");
+    assert_eq!(serde_json::to_string(&WorkflowState::Queued).unwrap(), "\"queued\"");
+    assert_eq!(serde_json::to_string(&WorkflowState::DeepRead).unwrap(), "\"deepread\"");
+    assert_eq!(serde_json::to_string(&WorkflowState::Archived).unwrap(), "\"archived\"");
+  }
+
+  #[test]
+  fn round_trips_via_json() {
+    for v in [
+      WorkflowState::Inbox,
+      WorkflowState::Queued,
+      WorkflowState::DeepRead,
+      WorkflowState::Archived,
+    ] {
+      let s = serde_json::to_string(&v).unwrap();
+      let back: WorkflowState = serde_json::from_str(&s).unwrap();
+      assert_eq!(v, back);
     }
   }
 }

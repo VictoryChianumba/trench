@@ -2529,18 +2529,33 @@ fn footer_command_line(app: &App) -> Line<'static> {
   if app.feed_tab == FeedTab::Discoveries {
     spans.push(Span::styled("discoveries", accent));
     spans.push(Span::styled(
-      ": / search | Enter open | Ctrl+N new | Tab inbox | ? help",
+      ": / search | Enter open | Ctrl+N new | Tab history | ? help",
+      ordinary,
+    ));
+  } else if app.feed_tab == FeedTab::Library {
+    let label = if app.library_visual_mode { "library visual" } else { "library" };
+    let keys = if app.library_visual_mode {
+      ": j/k select | r read | w queue | x archive | t tag | Esc cancel"
+    } else {
+      ": [/] state | {/} time | v select | t tag | Tab discoveries | ? help"
+    };
+    spans.push(Span::styled(label, accent));
+    spans.push(Span::styled(keys, ordinary));
+  } else if app.feed_tab == FeedTab::History {
+    spans.push(Span::styled("history", accent));
+    spans.push(Span::styled(
+      ": [/] time | Enter reopen | Ctrl+D delete | / search | Tab inbox | ? help",
       ordinary,
     ));
   } else {
     spans.push(Span::styled("feed", accent));
     spans.push(Span::styled(
-      ": j/k move | Enter read | Space details | f filters | Tab discoveries",
+      ": j/k move | Enter read | Space details | f filters | Tab library",
       ordinary,
     ));
     spans.push(Span::styled(" | ", ordinary));
     spans.push(Span::styled(
-      "w queue | r read | s skim | x archive | q quit | ? help",
+      "i inbox | r read | w queue | x archive | q quit | ? help",
       ordinary,
     ));
   }
@@ -4329,12 +4344,13 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     &[
       ("j / k", "Move down / up"),
       ("g / G", "Jump to top / bottom"),
-      ("Tab", "Switch Inbox / Discoveries"),
+      ("Tab", "Cycle: Inbox → Library → Discoveries → History"),
       ("Enter", "Open paper in reader"),
       ("Space", "Show abstract/details"),
-      ("Search", "/ search · Esc clear"),
+      ("/", "Search items by title/author"),
+      ("f", "Open filter panel"),
       ("?", "Open help"),
-      ("q", "Quit from feed"),
+      ("q", "Quit (context-aware confirm)"),
       ("Esc", "Clear/back/cancel"),
       ("Mouse", "Click to focus interactive pane"),
     ],
@@ -4356,14 +4372,61 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ],
   ),
   (
-    "Feed",
+    "Inbox",
     &[
+      ("Scope", "Only items with state == Inbox"),
       ("R", "Refresh all sources"),
       ("o", "Open URL in browser"),
       ("v", "Open repo viewer"),
-      ("Workflow", "i inbox · s skimmed · r deep read"),
-      ("Queue", "w queued · x archive"),
-      ("Filters", "f panel · Space toggle · c clear · Esc return"),
+      ("Workflow", "i inbox · r read · w queue · x archive"),
+      ("Filter panel", "f open · Space toggle · c clear · Esc close"),
+    ],
+  ),
+  (
+    "Library",
+    &[
+      ("Scope", "Items where state ≠ Inbox"),
+      ("[ / ]", "Cycle workflow chip (All/Queue/Read/Archived)"),
+      ("{ / }", "Cycle time chip (Anytime/Today/24h/48h/Week/Month)"),
+      ("v", "Enter visual selection mode"),
+      ("t", "Open tag picker"),
+      ("Workflow keys", "i / r / w / x apply to current row"),
+      ("Visual mode", "j/k extend · r/w/x/i bulk apply · t bulk tag · Esc"),
+    ],
+  ),
+  (
+    "Discoveries",
+    &[
+      ("Search bar", "Any printable char focuses · Enter runs"),
+      ("/", "Open slash command palette"),
+      ("Ctrl+N", "Force new discovery (clear session)"),
+      ("Palette", "↑↓ choose · Tab complete · Enter run · Esc cancel"),
+      ("Slash cmds", "/discover · /sota · /reading-list · /code"),
+      ("", "/compare · /digest · /author · /trending · /watch"),
+    ],
+  ),
+  (
+    "History",
+    &[
+      ("Scope", "Paper opens + discovery queries"),
+      ("[ / ]", "Cycle time filter (All/Today/24h/48h/Week/Month)"),
+      ("/", "Search by title (filters within current window)"),
+      ("Enter", "Reopen paper · re-run query"),
+      ("Ctrl+D", "Delete selected entry"),
+      ("/clear history", "Wipe entire history"),
+    ],
+  ),
+  (
+    "Tags",
+    &[
+      ("t (Library)", "Open tag picker for current item"),
+      ("t (visual mode)", "Open tag picker for all selected"),
+      ("In picker: type", "Add new tag name"),
+      ("In picker: ↑↓", "Navigate existing tags"),
+      ("In picker: Space", "Toggle highlighted tag"),
+      ("In picker: Enter", "Add new tag (or toggle if input empty)"),
+      ("In picker: Esc", "Close"),
+      ("Filter panel", "Toggle tags via Tags section"),
     ],
   ),
   (
@@ -4386,26 +4449,20 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ],
   ),
   (
-    "Discoveries",
-    &[
-      ("Tab", "Switch Inbox / Discoveries"),
-      ("/", "Open AI topic search"),
-      ("Enter", "Run search or command"),
-      ("Ctrl+N", "Force new search"),
-      ("Command palette", "Up/Down choose · Tab complete · Esc close"),
-      ("Plan checklist", "j/k move · Space toggle · a add all"),
-    ],
-  ),
-  (
     "Chat",
     &[
       ("Enter", "Send message"),
-      ("j / k", "Scroll chat history"),
-      ("Esc", "Back to session list"),
+      ("j / k", "Scroll (normal mode)"),
+      ("i / a / Enter", "Insert mode (normal mode)"),
+      ("Esc", "Normal mode / back to session list"),
       ("/", "Open slash command palette"),
       ("Tab", "Complete slash command"),
       ("Up / Down", "Navigate slash commands"),
       ("Ctrl+n / Ctrl+p", "Next / previous slash command"),
+      ("/clear", "Clear chat · /clear discoveries · /clear history"),
+      ("/export-history", "[md|jsonl]"),
+      ("/export-library", "[md|jsonl] (respects filters)"),
+      ("/add", "/add CATEGORY · /add-feed URL"),
       ("Session list", "n new · d delete · Enter open"),
       ("Ldr+c", "Close chat panel"),
       ("Ldr+z", "Move chat top / bottom"),

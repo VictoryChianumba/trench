@@ -1,11 +1,34 @@
+use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{ChatIndex, ChatSession, ChatSessionMeta};
+
+/// Crash-safe write: writes to `<path>.tmp`, fsyncs, then renames onto `path`.
+/// A panic, SIGINT, or power loss either leaves the original unchanged or
+/// replaces it atomically — never truncated.
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+  let mut tmp_name: OsString = path.as_os_str().to_owned();
+  tmp_name.push(".tmp");
+  let tmp_path = PathBuf::from(tmp_name);
+  let _ = fs::remove_file(&tmp_path);
+  {
+    let mut f = fs::File::create(&tmp_path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+  }
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600));
+  }
+  fs::rename(&tmp_path, path)
+}
 
 fn chats_dir() -> PathBuf {
   let base = dirs::config_dir()
@@ -49,7 +72,7 @@ pub fn load_index() -> ChatIndex {
 pub fn save_index(index: &ChatIndex) -> Result<()> {
   ensure_dir()?;
   let data = serde_json::to_string_pretty(index)?;
-  fs::write(index_path(), data)?;
+  atomic_write(&index_path(), data.as_bytes())?;
   Ok(())
 }
 
@@ -65,7 +88,7 @@ pub fn load_session(id: &str) -> Option<ChatSession> {
 pub fn save_session(session: &ChatSession) -> Result<()> {
   ensure_dir()?;
   let data = serde_json::to_string_pretty(session)?;
-  fs::write(session_path(&session.id), data)?;
+  atomic_write(&session_path(&session.id), data.as_bytes())?;
   Ok(())
 }
 
