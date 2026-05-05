@@ -360,6 +360,29 @@ fn open_notes(app: &mut App) {
   app.focused_pane = PaneId::Notes;
 }
 
+fn ensure_chat(app: &mut App) {
+  if app.chat_ui.is_some() {
+    return;
+  }
+
+  let mut registry = chat::ProviderRegistry::new();
+  if let Some(k) = app.config.claude_api_key.as_ref().filter(|k| !k.is_empty()) {
+    registry.register(
+      "claude",
+      Box::new(chat::ClaudeProvider::new(k.clone())),
+    );
+  }
+  if let Some(k) = app.config.openai_api_key.as_ref().filter(|k| !k.is_empty()) {
+    registry.register(
+      "openai",
+      Box::new(chat::OpenAiProvider::new(k.clone())),
+    );
+  }
+  let default_provider = app.config.default_chat_provider.clone();
+  let slash_commands = crate::commands::registry::chat_slash_specs();
+  app.chat_ui = Some(chat::ChatUi::new(registry, default_provider, slash_commands));
+}
+
 fn handle_leader(key: KeyEvent, app: &mut App) {
   log::debug!("leader dispatch: {:?}", key.code);
   let is_nav = matches!(
@@ -390,33 +413,22 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         app.focused_pane =
           if app.reader_active { PaneId::Reader } else { PaneId::Feed };
       } else {
-        if app.chat_ui.is_none() {
-          let mut registry = chat::ProviderRegistry::new();
-          if let Some(k) =
-            app.config.claude_api_key.as_ref().filter(|k| !k.is_empty())
-          {
-            registry.register(
-              "claude",
-              Box::new(chat::ClaudeProvider::new(k.clone())),
-            );
-          }
-          if let Some(k) =
-            app.config.openai_api_key.as_ref().filter(|k| !k.is_empty())
-          {
-            registry.register(
-              "openai",
-              Box::new(chat::OpenAiProvider::new(k.clone())),
-            );
-          }
-          let default_provider = app.config.default_chat_provider.clone();
-          let slash_commands = crate::commands::registry::chat_slash_specs();
-          app.chat_ui =
-            Some(chat::ChatUi::new(registry, default_provider, slash_commands));
-        }
+        ensure_chat(app);
         app.notes_active = false;
         app.chat_active = true;
         app.focused_pane = PaneId::Chat;
       }
+    }
+    KeyCode::Char('C') => {
+      ensure_chat(app);
+      app.notes_active = false;
+      app.chat_active = true;
+      app.chat_fullscreen = app
+        .chat_ui
+        .as_ref()
+        .is_some_and(|chat| chat.state == chat::ChatUiState::Chat)
+        && !app.chat_fullscreen;
+      app.focused_pane = PaneId::Chat;
     }
     KeyCode::Char('s') => {
       app.settings_github_token =
@@ -2302,6 +2314,21 @@ fn handle_history_tab(key: KeyEvent, app: &mut App) -> bool {
       let len = app.filtered_history().len();
       if len > 0 && app.history_selected_index >= len {
         app.history_selected_index = len - 1;
+      }
+      true
+    }
+    KeyCode::Char('o') => {
+      let visible = app.filtered_history();
+      let Some(entry) = visible.get(app.history_selected_index).map(|e| (*e).clone()) else {
+        return true;
+      };
+      if entry.kind == HistoryKind::Paper {
+        open_url(&entry.key);
+        app.notification = Some(format!(
+          "Opened in browser: {}",
+          truncate_for_notif(&entry.title, 40)
+        ));
+        app.notification_item_id = Some(entry.key.clone());
       }
       true
     }

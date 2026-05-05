@@ -15,7 +15,7 @@ use crate::app::{
   QuitPopupKind, ReaderTab, SourcesDetectState,
 };
 use crate::config::{self, CUSTOM_THEME_ROLES};
-use crate::models::{ContentType, SignalLevel, SourcePlatform, WorkflowState};
+use crate::models::{ContentType, FeedItem, SignalLevel, SourcePlatform, WorkflowState};
 use std::collections::HashSet;
 
 pub const RIGHT_COL_WIDTH: u16 = 50;
@@ -66,6 +66,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
   let theme = app.theme();
   let margin = area.width / 20;
   let title_h = title_bar_height(area.width);
+  let chat_context = chat_context_line(app);
 
   // Fixed zones: title, search=2, footer=2.  Remaining rows split between
   // main panes and (optionally) chat panel.
@@ -74,8 +75,9 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
 
   // Only allocate a dedicated panel row when the chat conversation is open.
   // Session-list and new-session overlays float over the main layout instead.
-  let chat_needs_panel =
-    app.chat_active && app.chat_ui.as_ref().map_or(true, |c| c.needs_panel());
+  let chat_needs_panel = app.chat_active
+    && !app.chat_fullscreen
+    && app.chat_ui.as_ref().map_or(true, |c| c.needs_panel());
 
   let (main_h, chat_h) = if chat_needs_panel {
     let ch = (available / 2).max(15).min(available.saturating_sub(10));
@@ -110,7 +112,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     let chat_rect = Some(rows[2]);
     if let Some(chat_ui) = app.chat_ui.as_mut() {
       let t = std::time::Instant::now();
-      chat_ui.draw(frame, rows[2], &theme);
+      chat_ui.draw_with_context(frame, rows[2], &theme, chat_context.as_deref());
       log::debug!("chat_ui.draw (top): {}ms", t.elapsed().as_millis());
     }
 
@@ -150,15 +152,32 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
     draw_search_row(frame, app, h_margin(rows[1], margin));
     log::debug!("draw_search_row: {}ms", t.elapsed().as_millis());
 
-    let t = std::time::Instant::now();
-    let mr = draw_main_row(frame, app, h_margin(rows[2], margin));
-    log::debug!("draw_main_row: {}ms", t.elapsed().as_millis());
+    let main_rect = h_margin(rows[2], margin);
+    let mr = if app.chat_active && app.chat_fullscreen {
+      if let Some(chat_ui) = app.chat_ui.as_mut() {
+        let t = std::time::Instant::now();
+        chat_ui.draw_expanded(frame, main_rect, &theme, chat_context.as_deref());
+        log::debug!("chat_ui.draw_expanded: {}ms", t.elapsed().as_millis());
+      }
+      MainRowRects {
+        feed: None,
+        reader: None,
+        secondary_reader: None,
+        notes: None,
+        details: None,
+      }
+    } else {
+      let t = std::time::Instant::now();
+      let mr = draw_main_row(frame, app, main_rect);
+      log::debug!("draw_main_row: {}ms", t.elapsed().as_millis());
+      mr
+    };
 
     let chat_rect = if chat_needs_panel { Some(rows[3]) } else { None };
     if chat_needs_panel {
       if let Some(chat_ui) = app.chat_ui.as_mut() {
         let t = std::time::Instant::now();
-        chat_ui.draw(frame, rows[3], &theme);
+        chat_ui.draw_with_context(frame, rows[3], &theme, chat_context.as_deref());
         log::debug!("chat_ui.draw (bottom): {}ms", t.elapsed().as_millis());
       }
     }
@@ -167,7 +186,7 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
       mr.reader,
       mr.notes,
       mr.details,
-      chat_rect,
+      if app.chat_fullscreen { Some(main_rect) } else { chat_rect },
       mr.secondary_reader,
     );
 
@@ -192,6 +211,30 @@ fn draw_feed(frame: &mut Frame, app: &mut App) {
   if app.reader_dual_active && app.reader_bottom_open {
     draw_reader_bottom_pane(frame, app, area);
   }
+}
+
+fn chat_context_line(app: &App) -> Option<String> {
+  if app.reader_active {
+    let title = match app.focused_reader {
+      FocusedReader::Secondary if app.reader_dual_active => app
+        .reader_secondary_tabs
+        .get(app.reader_secondary_active_tab)
+        .map(|tab| tab.title.as_str()),
+      _ => app.reader_tabs.get(app.reader_active_tab).map(|tab| tab.title.as_str()),
+    };
+    if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+      return Some(format!("active reader · {}", truncate(title, 96)));
+    }
+  }
+
+  app.selected_item().map(|item| {
+    let source = if item.source_name.is_empty() {
+      item.source_platform.short_label()
+    } else {
+      item.source_name.as_str()
+    };
+    format!("selected item · {} · {}", source, truncate(&item.title, 96))
+  })
 }
 
 // ── Title bar ──────────────────────────────────────────────────────────────
@@ -1132,61 +1175,178 @@ fn draw_history_tab(frame: &mut Frame, app: &App, area: Rect) {
     return;
   }
 
+  let header_style = Style::default().fg(t.header).add_modifier(Modifier::BOLD);
+  let header = Row::new(vec![
+    feed_header_cell("Src", header_style),
+    feed_header_cell("Kind", header_style),
+    feed_header_cell("Title", header_style),
+    feed_header_cell("Date", header_style),
+    feed_header_cell("Viewed", header_style),
+  ])
+  .height(2);
+
+  let inner = Rect {
+    y: list_area.y.saturating_add(1),
+    height: list_area.height.saturating_sub(1),
+    ..list_area
+  };
+  if inner.height == 0 {
+    return;
+  }
+
   let now = chrono::Utc::now();
-  let visible = list_area.height as usize;
+  let title_w = (inner.width.saturating_sub(7 + 7 + 10 + 10 + 4)) as usize;
+  let title_wrap_w = title_w.max(10);
+  let viewport_rows = inner.height.saturating_sub(2) as usize;
+  if viewport_rows == 0 {
+    let table = Table::new(
+      Vec::<Row>::new(),
+      [
+        Constraint::Length(5),
+        Constraint::Min(0),
+        Constraint::Length(14),
+        Constraint::Length(10),
+      ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .row_highlight_style(Style::default());
+    frame.render_widget(table, inner);
+    return;
+  }
   let total = entries.len();
   let selected = app.history_selected_index.min(total.saturating_sub(1));
-  let offset = app.history_list_offset.min(total.saturating_sub(visible.min(total)));
-
-  let title_w = (list_area.width as usize).saturating_sub(2 + 4 + 12 + 10 + 8);
-  let mut lines: Vec<Line> = Vec::with_capacity(visible);
-  for (i, entry) in entries.iter().skip(offset).take(visible).enumerate() {
-    let is_selected = offset + i == selected;
-    let row_style = if is_selected {
-      Style::default().fg(t.text).add_modifier(Modifier::BOLD)
-    } else {
-      Style::default().fg(t.text)
-    };
-    let dim = if is_selected {
-      Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)
-    } else {
-      Style::default().fg(t.text_dim)
-    };
-    let arrow = if is_selected {
-      Span::styled("→ ", Style::default().fg(t.accent))
-    } else {
-      Span::raw("  ")
-    };
-    let kind_marker = match entry.kind {
-      crate::history::HistoryKind::Paper => Span::styled("P  ", dim),
-      crate::history::HistoryKind::Query => Span::styled("Q  ", Style::default().fg(t.accent)),
-    };
-    let title_text = if entry.title.chars().count() > title_w {
-      let mut s: String = entry.title.chars().take(title_w.saturating_sub(1)).collect();
-      s.push('…');
-      s
-    } else {
-      format!("{:<width$}", entry.title, width = title_w)
-    };
-    let visit_text = if entry.visit_count > 1 {
-      format!("×{}", entry.visit_count)
-    } else {
-      String::new()
-    };
-    lines.push(Line::from(vec![
-      arrow,
-      kind_marker,
-      Span::styled(title_text, row_style),
-      Span::raw("  "),
-      Span::styled(format!("{:<10}", entry.source), dim),
-      Span::styled(
-        format!("{:<10}", crate::history::format_ago(entry.opened_at, now)),
-        dim,
-      ),
-      Span::styled(visit_text, dim),
-    ]));
+  let mut offset = app
+    .history_list_offset
+    .min(total.saturating_sub(viewport_rows.min(total)));
+  if selected < offset {
+    offset = selected;
+  } else if selected >= offset + viewport_rows {
+    offset = selected + 1 - viewport_rows;
   }
-  frame.render_widget(Paragraph::new(lines), list_area);
+
+  let end = (offset + viewport_rows + 2).min(total);
+  let window = &entries[offset..end];
+  let window_data: Vec<(u16, Vec<Line>)> = window
+    .iter()
+    .map(|entry| {
+      let mut raw_lines = textwrap::wrap(&entry.title, title_wrap_w);
+      let row_height = raw_lines.len().min(2).max(1) as u16;
+      if raw_lines.len() > 2 {
+        raw_lines.truncate(2);
+        if let Some(last) = raw_lines.last_mut() {
+          let s = last.clone().into_owned();
+          let trimmed = safe_truncate_chars(&s, title_wrap_w.saturating_sub(1));
+          *last = std::borrow::Cow::Owned(format!("{trimmed}…"));
+        }
+      }
+      let title_lines =
+        raw_lines.into_iter().map(|l| Line::from(l.into_owned())).collect();
+      (row_height, title_lines)
+    })
+    .collect();
+
+  let rows: Vec<Row> = window
+    .iter()
+    .enumerate()
+    .map(|(i, entry)| {
+      let item_idx = offset + i;
+      let is_selected = item_idx == selected;
+      let (content_height, title_lines) = &window_data[i];
+      let cached_item = app
+        .items
+        .iter()
+        .chain(app.discovery_items.iter())
+        .find(|item| item.url == entry.key);
+      let row_style =
+        if is_selected { t.style_selection() } else { Style::default() };
+      let selected_text_style = t.style_selection_text();
+      let selected_dim_style = t.style_selection_dim();
+      let dim_style =
+        if is_selected { selected_dim_style } else { Style::default().fg(t.text_dim) };
+      let source = cached_item
+        .map(feed_source_label)
+        .unwrap_or_else(|| history_source_label(entry));
+      let kind = match (entry.kind, cached_item) {
+        (crate::history::HistoryKind::Paper, Some(item)) => {
+          item.content_type.short_label().to_string()
+        }
+        (crate::history::HistoryKind::Paper, None) => "paper".to_string(),
+        (crate::history::HistoryKind::Query, _) => "query".to_string(),
+      };
+      let date = cached_item
+        .map(|item| item.published_at.as_str())
+        .or_else(|| {
+          entry
+            .paper_meta
+            .as_ref()
+            .map(|meta| meta.published_at.as_str())
+        })
+        .unwrap_or("");
+      let source_style = if is_selected {
+        selected_text_style
+      } else if entry.kind == crate::history::HistoryKind::Query {
+        Style::default().fg(t.accent)
+      } else {
+        Style::default().fg(t.accent)
+      };
+      Row::new(vec![
+        feed_cell(&source, source_style, is_selected),
+        feed_cell(&kind, dim_style, is_selected),
+        Cell::from(Text::from(feed_title_lines(
+          style_feed_title_lines(title_lines.clone(), if is_selected {
+            selected_text_style
+          } else {
+            Style::default()
+          }),
+          is_selected,
+        ))),
+        feed_cell(date, dim_style, is_selected),
+        feed_cell(
+          &crate::history::format_ago(entry.opened_at, now),
+          dim_style,
+          is_selected,
+        ),
+      ])
+      .style(row_style)
+      .height((content_height + 1).max(3))
+    })
+    .collect();
+
+  let table = Table::new(
+    rows,
+    [
+      Constraint::Length(7),
+      Constraint::Length(7),
+      Constraint::Min(0),
+      Constraint::Length(10),
+      Constraint::Length(10),
+    ],
+  )
+  .header(header)
+  .column_spacing(1)
+  .row_highlight_style(Style::default());
+  frame.render_widget(table, inner);
+
+  if total > 0 {
+    let mut scrollbar_state = ScrollbarState::new(total)
+      .position(offset)
+      .viewport_content_length(viewport_rows);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+      .begin_symbol(None)
+      .end_symbol(None);
+    frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
+  }
+}
+
+fn history_source_label(entry: &crate::history::HistoryEntry) -> String {
+  match entry.paper_meta.as_ref().map(|meta| &meta.source_platform) {
+    Some(SourcePlatform::HuggingFace) => "hf".to_string(),
+    Some(SourcePlatform::ArXiv) => "arxiv".to_string(),
+    Some(SourcePlatform::Rss) if !entry.source.is_empty() => truncate(&entry.source, 7),
+    Some(platform) => platform.short_label().to_string(),
+    None => truncate(&entry.source, 7),
+  }
 }
 
 fn draw_narrow_feed(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -2016,22 +2176,14 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
   // Reset scroll when the selected item changes, before borrowing item data.
   {
-    let current_url = app.selected_item().map(|i| i.url.clone());
-    if current_url != app.details_last_item_url {
+    let current_key = details_subject_key(app);
+    if current_key != app.details_last_item_url {
       app.details_scroll = 0;
-      app.details_last_item_url = current_url;
+      app.details_last_item_url = current_key;
     }
   }
 
-  if let Some(item) = app.selected_item() {
-    let tags = item.domain_tags.join(", ");
-    let authors = item.authors.join(", ");
-
-    let source_label = if item.source_name.is_empty() {
-      item.source_platform.short_label().to_string()
-    } else {
-      item.source_name.clone()
-    };
+  if let Some(subject) = details_subject(app) {
     let title_style = Style::default().fg(t.text).add_modifier(Modifier::BOLD);
     let meta_style = Style::default().fg(t.text_dim);
     let label_style =
@@ -2040,153 +2192,27 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let value_style = Style::default().fg(t.text);
     let accent_style = Style::default().fg(t.accent);
     let detail_w = inner.width.max(1) as usize;
-    let mut lines: Vec<Line> = textwrap::wrap(&item.title, detail_w)
-      .into_iter()
-      .take(2)
-      .map(|line| Line::from(Span::styled(line.into_owned(), title_style)))
-      .collect();
-
-    let meta_parts = [
-      source_label.as_str(),
-      item.content_type.short_label(),
-      item.published_at.as_str(),
-      item.workflow_state.short_label(),
-    ];
-    lines.push(Line::from(Span::styled(
-      truncate(&meta_parts.join(" · "), detail_w),
-      meta_style,
-    )));
-    lines.push(Line::from(""));
-
-    push_detail_field(
-      &mut lines,
-      "Authors",
-      &authors,
-      label_style,
-      value_style,
+    let mut lines = render_details_subject(
+      subject,
+      app,
+      DetailStyles {
+        title_style,
+        header_style: Style::default().fg(t.header).add_modifier(Modifier::BOLD),
+        meta_style,
+        label_style,
+        dim_style,
+        value_style,
+        accent_style,
+        success_style: Style::default().fg(t.success),
+      },
       detail_w,
-      3,
+      inner.width as usize,
+      inner.height as usize,
     );
 
-    lines.push(Line::from(""));
-    let mut source_spans = vec![
-      Span::styled("Source   ", label_style),
-      Span::styled(truncate(&source_label, 16), accent_style),
-      Span::styled("  ", dim_style),
-      Span::styled(item.content_type.short_label(), accent_style),
-    ];
-    if item.source_platform == SourcePlatform::HuggingFace && item.upvote_count > 0 {
-      source_spans.extend([
-        Span::styled("  votes ", dim_style),
-        Span::styled(item.upvote_count.to_string(), value_style),
-      ]);
+    if lines.len() > inner.height as usize {
+      lines.truncate(inner.height as usize);
     }
-    lines.push(Line::from(source_spans));
-
-    if let Some(ref repo) = item.github_repo {
-      let display = repo.strip_prefix("https://").unwrap_or(repo.as_str());
-      push_detail_field(
-        &mut lines,
-        "Repo",
-        display,
-        label_style,
-        accent_style,
-        detail_w,
-        1,
-      );
-    }
-
-    if !tags.is_empty() {
-      push_detail_field(
-        &mut lines,
-        "Topics",
-        &tags,
-        label_style,
-        value_style,
-        detail_w,
-        2,
-      );
-    }
-
-    let user_tags = crate::tags::for_url(&app.item_tags, &item.url);
-    if !user_tags.is_empty() {
-      let formatted = user_tags
-        .iter()
-        .map(|t| format!("[{t}]"))
-        .collect::<Vec<_>>()
-        .join("  ");
-      push_detail_field(
-        &mut lines,
-        "Tags",
-        &formatted,
-        label_style,
-        accent_style,
-        detail_w,
-        2,
-      );
-    }
-
-    if !item.benchmark_results.is_empty() {
-      lines.push(Line::from(""));
-      lines.push(Line::from(Span::styled(
-        "Benchmarks",
-        Style::default().fg(t.header).add_modifier(Modifier::UNDERLINED),
-      )));
-      for b in item.benchmark_results.iter().take(3) {
-        lines.push(Line::from(Span::styled(
-          truncate(
-            &format!("  {}/{}: {} ({})", b.task, b.dataset, b.score, b.metric),
-            inner.width as usize,
-          ),
-          Style::default().fg(t.text_dim),
-        )));
-      }
-    }
-
-    let mut footer_lines: Vec<Line> = vec![
-      Line::from(""),
-      Line::from(vec![
-        Span::styled("URL      ", label_style),
-        Span::styled(truncate(&item.url, detail_w.saturating_sub(9)), dim_style),
-      ]),
-    ];
-
-    if let Some(notif) = &app.notification {
-      if app.notification_item_id.as_deref() == Some(item.url.as_str()) {
-        footer_lines.push(Line::from(""));
-        footer_lines.push(Line::from(Span::styled(
-          notif.as_str(),
-          Style::default().fg(t.warning),
-        )));
-      }
-    }
-
-    if item.github_owner.is_some() && item.github_repo_name.is_some() {
-      footer_lines.push(Line::from(vec![
-        Span::styled("Repo     ", label_style),
-        Span::styled("linked: press ", dim_style),
-        Span::styled("v", Style::default().fg(t.success)),
-        Span::styled(" to view", dim_style),
-      ]));
-    }
-
-    let visible_height = inner.height as usize;
-    let reserved_after_summary = footer_lines.len() + 2;
-    let available_summary_lines = visible_height
-      .saturating_sub(lines.len().saturating_add(reserved_after_summary))
-      .min(7);
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-      "Summary",
-      Style::default().fg(t.header).add_modifier(Modifier::BOLD),
-    )));
-    lines.extend(wrap_limited_ellipsis(
-      &item.summary_short,
-      detail_w,
-      available_summary_lines,
-      value_style,
-    ));
-    lines.extend(footer_lines);
 
     let para = Paragraph::new(lines);
     let t_para = std::time::Instant::now();
@@ -2197,7 +2223,7 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
       t_para.elapsed().as_millis()
     );
   } else {
-    let hint = Paragraph::new("Select an item from the feed")
+    let hint = Paragraph::new("Select an item from the feed or history")
       .style(Style::default().fg(t.text_dim));
     frame.render_widget(hint, inner);
   }
@@ -2206,6 +2232,373 @@ fn draw_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     "draw_details_panel total: {}ms",
     t_details.elapsed().as_millis()
   );
+}
+
+enum DetailsSubject<'a> {
+  FeedItem(&'a FeedItem),
+  HistoryPaper {
+    entry: &'a crate::history::HistoryEntry,
+    item: Option<&'a FeedItem>,
+    meta: Option<&'a crate::history::HistoryPaperMeta>,
+  },
+  HistoryQuery(&'a crate::history::HistoryEntry),
+}
+
+#[derive(Clone, Copy)]
+struct DetailStyles {
+  title_style: Style,
+  header_style: Style,
+  meta_style: Style,
+  label_style: Style,
+  dim_style: Style,
+  value_style: Style,
+  accent_style: Style,
+  success_style: Style,
+}
+
+fn details_subject(app: &App) -> Option<DetailsSubject<'_>> {
+  if app.feed_tab == FeedTab::History {
+    let entries = app.filtered_history();
+    let entry = *entries.get(app.history_selected_index)?;
+    return match entry.kind {
+      crate::history::HistoryKind::Paper => {
+        let item = app
+          .items
+          .iter()
+          .chain(app.discovery_items.iter())
+          .find(|item| item.url == entry.key);
+        Some(DetailsSubject::HistoryPaper {
+          entry,
+          item,
+          meta: entry.paper_meta.as_ref(),
+        })
+      }
+      crate::history::HistoryKind::Query => Some(DetailsSubject::HistoryQuery(entry)),
+    };
+  }
+  app.selected_item().map(DetailsSubject::FeedItem)
+}
+
+fn details_subject_key(app: &App) -> Option<String> {
+  match details_subject(app)? {
+    DetailsSubject::FeedItem(item) => Some(item.url.clone()),
+    DetailsSubject::HistoryPaper { entry, .. } => Some(entry.key.clone()),
+    DetailsSubject::HistoryQuery(entry) => Some(format!("query:{}", entry.key)),
+  }
+}
+
+fn render_details_subject<'a>(
+  subject: DetailsSubject<'a>,
+  app: &'a App,
+  s: DetailStyles,
+  detail_w: usize,
+  inner_w: usize,
+  visible_height: usize,
+) -> Vec<Line<'a>> {
+  match subject {
+    DetailsSubject::FeedItem(item) => {
+      render_feed_item_details(item, app, s, detail_w, inner_w, visible_height)
+    }
+    DetailsSubject::HistoryPaper { entry, item: Some(item), .. } => {
+      let mut lines =
+        render_feed_item_details(item, app, s, detail_w, inner_w, visible_height);
+      lines.insert(
+        2.min(lines.len()),
+        Line::from(Span::styled(
+          format!("Viewed {}", crate::history::format_ago(entry.opened_at, chrono::Utc::now())),
+          s.meta_style,
+        )),
+      );
+      lines
+    }
+    DetailsSubject::HistoryPaper { entry, item: None, meta } => {
+      render_history_paper_details(entry, meta, app, s, detail_w, visible_height)
+    }
+    DetailsSubject::HistoryQuery(entry) => render_history_query_details(entry, s, detail_w),
+  }
+}
+
+fn render_feed_item_details<'a>(
+  item: &'a FeedItem,
+  app: &'a App,
+  s: DetailStyles,
+  detail_w: usize,
+  inner_w: usize,
+  visible_height: usize,
+) -> Vec<Line<'a>> {
+  let tags = item.domain_tags.join(", ");
+  let authors = item.authors.join(", ");
+  let source_label = if item.source_name.is_empty() {
+    item.source_platform.short_label().to_string()
+  } else {
+    item.source_name.clone()
+  };
+  let mut lines = detail_title_lines(&item.title, detail_w, s.title_style);
+  let meta_parts = [
+    source_label.as_str(),
+    item.content_type.short_label(),
+    item.published_at.as_str(),
+    item.workflow_state.short_label(),
+  ];
+  lines.push(Line::from(Span::styled(
+    truncate(&meta_parts.join(" · "), detail_w),
+    s.meta_style,
+  )));
+  lines.push(Line::from(""));
+  push_detail_field(
+    &mut lines,
+    "Authors",
+    &authors,
+    s.label_style,
+    s.value_style,
+    detail_w,
+    3,
+  );
+  lines.push(Line::from(""));
+  let mut source_spans = vec![
+    Span::styled("Source   ", s.label_style),
+    Span::styled(truncate(&source_label, 16), s.accent_style),
+    Span::styled("  ", s.dim_style),
+    Span::styled(item.content_type.short_label(), s.accent_style),
+  ];
+  if item.source_platform == SourcePlatform::HuggingFace && item.upvote_count > 0 {
+    source_spans.extend([
+      Span::styled("  votes ", s.dim_style),
+      Span::styled(item.upvote_count.to_string(), s.value_style),
+    ]);
+  }
+  lines.push(Line::from(source_spans));
+  if let Some(ref repo) = item.github_repo {
+    let display = repo.strip_prefix("https://").unwrap_or(repo.as_str());
+    push_detail_field(
+      &mut lines,
+      "Repo",
+      display,
+      s.label_style,
+      s.accent_style,
+      detail_w,
+      1,
+    );
+  }
+  if !tags.is_empty() {
+    push_detail_field(
+      &mut lines,
+      "Topics",
+      &tags,
+      s.label_style,
+      s.value_style,
+      detail_w,
+      2,
+    );
+  }
+  let user_tags = crate::tags::for_url(&app.item_tags, &item.url);
+  if !user_tags.is_empty() {
+    let formatted =
+      user_tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join("  ");
+    push_detail_field(
+      &mut lines,
+      "Tags",
+      &formatted,
+      s.label_style,
+      s.accent_style,
+      detail_w,
+      2,
+    );
+  }
+  if !item.benchmark_results.is_empty() {
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+      "Benchmarks",
+      s.header_style.add_modifier(Modifier::UNDERLINED),
+    )));
+    for b in item.benchmark_results.iter().take(3) {
+      lines.push(Line::from(Span::styled(
+        truncate(&format!("  {}/{}: {} ({})", b.task, b.dataset, b.score, b.metric), inner_w),
+        s.dim_style,
+      )));
+    }
+  }
+  let notif = app
+    .notification
+    .as_deref()
+    .filter(|_| app.notification_item_id.as_deref() == Some(item.url.as_str()));
+  let footer_lines = 3
+    + usize::from(item.github_owner.is_some() && item.github_repo_name.is_some())
+    + notif.map_or(0, |_| 2);
+  let summary_lines = visible_height
+    .saturating_sub(lines.len().saturating_add(footer_lines + 2))
+    .min(7);
+  push_summary_and_actions(
+    &mut lines,
+    &item.summary_short,
+    &item.url,
+    item.github_owner.is_some() && item.github_repo_name.is_some(),
+    notif,
+    summary_lines,
+    s,
+    detail_w,
+  );
+  lines
+}
+
+fn render_history_paper_details<'a>(
+  entry: &'a crate::history::HistoryEntry,
+  meta: Option<&'a crate::history::HistoryPaperMeta>,
+  app: &'a App,
+  s: DetailStyles,
+  detail_w: usize,
+  visible_height: usize,
+) -> Vec<Line<'a>> {
+  let mut lines = detail_title_lines(&entry.title, detail_w, s.title_style);
+  let now = chrono::Utc::now();
+  let viewed = crate::history::format_ago(entry.opened_at, now);
+  let published = meta.map(|m| m.published_at.as_str()).unwrap_or("");
+  let source = meta
+    .map(|m| m.source_platform.short_label())
+    .unwrap_or(entry.source.as_str());
+  let meta_line = if published.is_empty() {
+    format!("History · {source} · viewed {viewed}")
+  } else {
+    format!("History · {source} · {published} · viewed {viewed}")
+  };
+  lines.push(Line::from(Span::styled(truncate(&meta_line, detail_w), s.meta_style)));
+  lines.push(Line::from(""));
+  if let Some(meta) = meta {
+    let authors = meta.authors.join(", ");
+    push_detail_field(
+      &mut lines,
+      "Authors",
+      &authors,
+      s.label_style,
+      s.value_style,
+      detail_w,
+      3,
+    );
+  }
+  lines.push(Line::from(""));
+  lines.push(Line::from(vec![
+    Span::styled("Source   ", s.label_style),
+    Span::styled(truncate(&entry.source, 16), s.accent_style),
+  ]));
+  let summary = meta.map(|m| m.summary_short.as_str()).unwrap_or("");
+  let notif = app
+    .notification
+    .as_deref()
+    .filter(|_| app.notification_item_id.as_deref() == Some(entry.key.as_str()));
+  let footer_lines = 3 + notif.map_or(0, |_| 2);
+  let summary_lines = visible_height
+    .saturating_sub(lines.len().saturating_add(footer_lines + 2))
+    .min(7);
+  push_summary_and_actions(
+    &mut lines,
+    summary,
+    &entry.key,
+    false,
+    notif,
+    summary_lines,
+    s,
+    detail_w,
+  );
+  lines
+}
+
+fn render_history_query_details<'a>(
+  entry: &'a crate::history::HistoryEntry,
+  s: DetailStyles,
+  detail_w: usize,
+) -> Vec<Line<'a>> {
+  let now = chrono::Utc::now();
+  let mut lines = detail_title_lines(&entry.title, detail_w, s.title_style);
+  lines.push(Line::from(Span::styled(
+    truncate(
+      &format!(
+        "History · query · {}",
+        crate::history::format_ago(entry.opened_at, now)
+      ),
+      detail_w,
+    ),
+    s.meta_style,
+  )));
+  lines.push(Line::from(""));
+  push_detail_field(
+    &mut lines,
+    "Intent",
+    &entry.source,
+    s.label_style,
+    s.value_style,
+    detail_w,
+    1,
+  );
+  push_detail_field(
+    &mut lines,
+    "Query",
+    &entry.key,
+    s.label_style,
+    s.value_style,
+    detail_w,
+    4,
+  );
+  lines.push(Line::from(""));
+  lines.push(Line::from(vec![
+    Span::styled("Action   ", s.label_style),
+    Span::styled("Enter", s.accent_style),
+    Span::styled(" rerun discovery", s.dim_style),
+  ]));
+  lines
+}
+
+fn detail_title_lines<'a>(
+  title: &str,
+  detail_w: usize,
+  title_style: Style,
+) -> Vec<Line<'a>> {
+  textwrap::wrap(title, detail_w)
+    .into_iter()
+    .take(2)
+    .map(|line| Line::from(Span::styled(line.into_owned(), title_style)))
+    .collect()
+}
+
+fn push_summary_and_actions<'a>(
+  lines: &mut Vec<Line<'a>>,
+  summary: &str,
+  url: &str,
+  has_repo: bool,
+  notification: Option<&str>,
+  summary_lines: usize,
+  s: DetailStyles,
+  detail_w: usize,
+) {
+  if !summary.is_empty() && summary_lines > 0 {
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+      "Summary",
+      s.header_style,
+    )));
+    lines.extend(wrap_limited_ellipsis(summary, detail_w, summary_lines, s.value_style));
+  }
+  let url_w = detail_w.saturating_sub(9);
+  lines.push(Line::from(""));
+  lines.push(Line::from(vec![
+    Span::styled("URL      ", s.label_style),
+    Span::styled(truncate(url, url_w), s.dim_style),
+  ]));
+  lines.push(Line::from(vec![
+    Span::styled("Action   ", s.label_style),
+    Span::styled("o", s.accent_style),
+    Span::styled(" open URL", s.dim_style),
+  ]));
+  if has_repo {
+    lines.push(Line::from(vec![
+      Span::styled("         ", s.label_style),
+      Span::styled("v", s.success_style),
+      Span::styled(" view repo", s.dim_style),
+    ]));
+  }
+  if let Some(notification) = notification {
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(notification.to_string(), s.dim_style)));
+  }
 }
 
 fn filter_header(
@@ -2450,7 +2843,7 @@ fn footer_command_line(app: &App) -> Line<'static> {
   if app.leader_active {
     spans.push(Span::styled("leader", accent));
     spans.push(Span::styled(
-      ": f feed | s settings | n notes | c chat | h/j/k/l focus | ? help",
+      ": f feed | s settings | n notes | c chat | C chat workspace | h/j/k/l focus | ? help",
       ordinary,
     ));
     return Line::from(spans);
@@ -2510,8 +2903,11 @@ fn footer_command_line(app: &App) -> Line<'static> {
 
   if app.focused_pane == PaneId::Chat && app.chat_active {
     spans.push(Span::styled("chat", accent));
+    let mode_hint = if app.chat_fullscreen { "Ldr+C compact" } else { "Ldr+C expand" };
     spans.push(Span::styled(
-      ": Enter send | / commands | Esc sessions | Ldr+c hide | ? help",
+      format!(
+        ": Enter send | / commands | Esc sessions | Ldr+c hide | {mode_hint} | ? help"
+      ),
       ordinary,
     ));
     return Line::from(spans);
@@ -4365,6 +4761,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("Reader", "Ldr+Enter popup · Ldr+f feed · Ldr+Esc back"),
       ("Ldr+n", "Toggle notes panel"),
       ("Ldr+c", "Toggle chat panel"),
+      ("Ldr+C", "Expand / compact active chat"),
       ("Ldr+z", "Move chat top / bottom"),
       ("Pane focus", "Ldr+h/j/k/l move by direction"),
       ("Ldr+1 / 2 / 3", "Focus interactive pane by number"),
@@ -4465,6 +4862,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("/add", "/add CATEGORY · /add-feed URL"),
       ("Session list", "n new · d delete · Enter open"),
       ("Ldr+c", "Close chat panel"),
+      ("Ldr+C", "Expand / compact active chat"),
       ("Ldr+z", "Move chat top / bottom"),
     ],
   ),
