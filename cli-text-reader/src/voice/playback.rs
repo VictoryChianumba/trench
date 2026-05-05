@@ -80,6 +80,16 @@ impl PlaybackController {
   }
 }
 
+/// When the controller is dropped (because the owning Editor closed), make
+/// sure the playback loop receives a Stop *before* its channel is hung up.
+/// Without this, audio queued in rodio keeps playing after the reader closes,
+/// since the loop only checks for interrupts between chunks.
+impl Drop for PlaybackController {
+  fn drop(&mut self) {
+    let _ = self.cmd_tx.send(PlaybackCommand::Stop);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Background playback loop
 // ---------------------------------------------------------------------------
@@ -184,6 +194,7 @@ fn playback_loop(
             if let Ok(interrupt) = cmd_rx.try_recv() {
               match interrupt {
                 PlaybackCommand::Stop => {
+                  sink.stop();
                   was_stopped = true;
                   break 'chunks;
                 }
@@ -198,10 +209,12 @@ fn playback_loop(
                         break 'paused;
                       }
                       PlaybackCommand::Stop => {
+                        sink.stop();
                         was_stopped = true;
                         break 'chunks;
                       }
                       PlaybackCommand::Start { .. } => {
+                        sink.stop();
                         was_stopped = true;
                         break 'chunks;
                       }
@@ -211,6 +224,7 @@ fn playback_loop(
                 }
                 PlaybackCommand::Resume => {}
                 PlaybackCommand::Start { .. } => {
+                  sink.stop();
                   was_stopped = true;
                   break 'chunks;
                 }
