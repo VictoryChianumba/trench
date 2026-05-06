@@ -6,6 +6,7 @@ use chrono::Utc;
 use ratatui::layout::Rect;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -182,10 +183,18 @@ pub enum FocusedReader {
   Secondary,
 }
 
-/// One open paper inside a reader pane.
+/// One open paper inside a reader pane.  Holds a tread Reader plus
+/// the per-tab image cache (`ImageState`) and an optional arXiv id
+/// the reader was opened with — used by `:reload` to refetch.  When
+/// the source isn't an arXiv paper (PDF / EPUB / HTML extract), we
+/// pass plain-text lines into `tread::PaperData::from_plain_lines`
+/// and `arxiv_id` stays `None`.
 pub struct ReaderTab {
   pub title: String,
-  pub editor: cli_text_reader::Editor,
+  pub arxiv_id: Option<String>,
+  pub paper_ref: Option<notes::PaperRef>,
+  pub reader: tread::Reader,
+  pub image_state: tread::ImageState,
 }
 
 /// One note document open in the notes pane.
@@ -194,6 +203,31 @@ pub struct NotesTab {
   #[serde(alias = "article_id")]
   pub note_id: String,
   pub title: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotesMode {
+  PaperNotes,
+  Library,
+  Capture,
+}
+
+impl NotesMode {
+  pub fn title(self) -> &'static str {
+    match self {
+      Self::PaperNotes => "Paper Notes",
+      Self::Library => "Notes Library",
+      Self::Capture => "Capture",
+    }
+  }
+
+  pub fn footer_label(self) -> &'static str {
+    match self {
+      Self::PaperNotes => "paper notes",
+      Self::Library => "notes library",
+      Self::Capture => "capture",
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -409,9 +443,13 @@ pub struct App {
   pub notes_active: bool,
   pub notes_tabs: Vec<NotesTab>,
   pub notes_active_tab: usize,
+  pub notes_mode: NotesMode,
+  pub notes_context_paper: Option<notes::PaperRef>,
   pub secondary_notes_active: bool,
   pub secondary_notes_tabs: Vec<NotesTab>,
   pub secondary_notes_active_tab: usize,
+  pub secondary_notes_mode: NotesMode,
+  pub secondary_notes_context_paper: Option<notes::PaperRef>,
 
   // Embedded chat pane
   pub chat_ui: Option<chat::ChatUi>,
@@ -427,7 +465,16 @@ pub struct App {
   // Floating reader popup (A1 — Ldr+Enter) — not tabbed, separate slot
   pub reader_popup_active: bool,
   pub reader_popup_rx: Option<Receiver<Result<Vec<String>, String>>>,
-  pub reader_popup_editor: Option<cli_text_reader::Editor>,
+  pub reader_popup_editor: Option<tread::Reader>,
+  /// Image cache for the popup reader.  Mirrors the per-tab field on
+  /// `ReaderTab`; needed because tread's image escapes are emitted
+  /// post-draw, outside ratatui's frame buffer, against host-owned state.
+  pub reader_popup_image_state: tread::ImageState,
+  /// Shared TTS playback controller.  Cloned into each `ReaderTab`'s
+  /// Reader so all open papers use one audio thread / one rodio sink.
+  /// Cross-tab preemption (only one paper speaks at a time) is handled
+  /// by tread's session-id machinery — see voice/playback.rs.
+  pub voice_controller: Arc<tread::PlaybackController>,
 
   // Secondary split view (A2 — Ldr+f cycles three reader/feed states)
   // State 1: normal feed (reader_split_active=false, reader_dual_active=false)
@@ -463,6 +510,7 @@ pub struct App {
   // Background fulltext fetch (article reader)
   pub fulltext_rx: Option<Receiver<Result<Vec<String>, String>>>,
   pub fulltext_loading: bool,
+  pub pending_fulltext_paper: Option<notes::PaperRef>,
   // Background repo fetch (repo viewer)
   pub repo_fetch_rx: Option<Receiver<RepoFetchResult>>,
 
@@ -582,9 +630,13 @@ impl App {
       notes_active: false,
       notes_tabs: Vec::new(),
       notes_active_tab: 0,
+      notes_mode: NotesMode::Library,
+      notes_context_paper: None,
       secondary_notes_active: false,
       secondary_notes_tabs: Vec::new(),
       secondary_notes_active_tab: 0,
+      secondary_notes_mode: NotesMode::Library,
+      secondary_notes_context_paper: None,
       chat_ui: None,
       chat_active: false,
       chat_fullscreen: false,
@@ -595,6 +647,8 @@ impl App {
       reader_popup_active: false,
       reader_popup_rx: None,
       reader_popup_editor: None,
+      reader_popup_image_state: tread::ImageState::default(),
+      voice_controller: tread::build_voice_controller(),
       reader_split_active: false,
       reader_dual_active: false,
       reader_secondary_tabs: Vec::new(),
@@ -617,6 +671,7 @@ impl App {
       last_read_source: None,
       fulltext_rx: None,
       fulltext_loading: false,
+      pending_fulltext_paper: None,
       repo_fetch_rx: None,
       last_scroll_time: None,
       scroll_debounce_ms: 50,
@@ -649,6 +704,52 @@ impl App {
       }
     }
     self.active_theme.theme()
+  }
+
+  /// Convert trench's `ui_theme::Theme` to tread's `tread::Theme`.
+  /// The two `ui_theme` crates are separate (different workspaces),
+  /// so the `Theme` STRUCTS don't unify — but their fields are all
+  /// `ratatui::style::Color`, which IS the same type across the build,
+  /// so the field values copy directly with no enum mapping.  We just
+  /// need to fill in the two extra fields tread carries
+  /// (`bg_highlight`, `link_fg`) with sensible defaults.
+  pub fn theme_for_tread(&self) -> tread::Theme {
+    use ratatui::style::Color;
+    let t = self.theme();
+    tread::Theme {
+      accent: t.accent,
+      header: t.header,
+      text: t.text,
+      text_dim: t.text_dim,
+      border: t.border,
+      border_active: t.border_active,
+      bg: t.bg,
+      bg_panel: t.bg_panel,
+      bg_input: t.bg_input,
+      bg_selection: t.bg_selection,
+      bg_code: t.bg_code,
+      bg_chat: t.bg_chat,
+      bg_user_msg: t.bg_user_msg,
+      bg_popup: t.bg_popup,
+      text_on_accent: t.text_on_accent,
+      success: t.success,
+      warning: t.warning,
+      error: t.error,
+      math: t.math,
+      mono: t.mono,
+      rule: t.rule,
+      toc_dim: t.toc_dim,
+      bookmark_bg: t.bookmark_bg,
+      cursor_bg: t.cursor_bg,
+      cursor_fg: t.cursor_fg,
+      search_match_bg: t.search_match_bg,
+      search_match_fg: t.search_match_fg,
+      // Tread-only fields: pick defaults that match tread's standalone
+      // dark theme.  bg_highlight is the marked-line tint; link_fg is
+      // the cross-ref / citation underline colour.
+      bg_highlight: Color::Rgb(80, 60, 0),
+      link_fg: Color::Rgb(120, 195, 220),
+    }
   }
 
   pub fn active_theme_name(&self) -> String {
@@ -2539,21 +2640,97 @@ mod tests {
 // ── Reader tab accessors ──────────────────────────────────────────────────────
 
 impl App {
-  pub fn reader_editor_mut(&mut self) -> Option<&mut cli_text_reader::Editor> {
-    self.reader_tabs.get_mut(self.reader_active_tab).map(|t| &mut t.editor)
+  pub fn notes_mode_for_side(&self, side: FocusedReader) -> NotesMode {
+    match side {
+      FocusedReader::Primary => self.notes_mode,
+      FocusedReader::Secondary => self.secondary_notes_mode,
+    }
   }
 
-  pub fn reader_secondary_editor_mut(
+  pub fn set_notes_mode_for_side(
     &mut self,
-  ) -> Option<&mut cli_text_reader::Editor> {
+    side: FocusedReader,
+    mode: NotesMode,
+  ) {
+    match side {
+      FocusedReader::Primary => self.notes_mode = mode,
+      FocusedReader::Secondary => self.secondary_notes_mode = mode,
+    }
+  }
+
+  pub fn notes_context_paper_for_side(
+    &self,
+    side: FocusedReader,
+  ) -> Option<&notes::PaperRef> {
+    match side {
+      FocusedReader::Primary => self.notes_context_paper.as_ref(),
+      FocusedReader::Secondary => self.secondary_notes_context_paper.as_ref(),
+    }
+  }
+
+  pub fn set_notes_context_paper_for_side(
+    &mut self,
+    side: FocusedReader,
+    paper: Option<notes::PaperRef>,
+  ) {
+    match side {
+      FocusedReader::Primary => self.notes_context_paper = paper,
+      FocusedReader::Secondary => self.secondary_notes_context_paper = paper,
+    }
+  }
+
+  pub fn reader_paper_ref(&self, side: FocusedReader) -> Option<notes::PaperRef> {
+    let tab = match side {
+      FocusedReader::Primary => self.reader_tabs.get(self.reader_active_tab),
+      FocusedReader::Secondary => {
+        self.reader_secondary_tabs.get(self.reader_secondary_active_tab)
+      }
+    }?;
+    tab.paper_ref.clone()
+  }
+
+  /// Active primary reader (mutable).  Returns the tread Reader so
+  /// callers can dispatch `handle_event` and read state.  Most call
+  /// sites also need the per-tab `ImageState` for `tread::after_draw`
+  /// — use `reader_active_tab_mut()` for both at once.
+  pub fn reader_editor_mut(&mut self) -> Option<&mut tread::Reader> {
+    self.reader_tabs.get_mut(self.reader_active_tab).map(|t| &mut t.reader)
+  }
+
+  pub fn reader_secondary_editor_mut(&mut self) -> Option<&mut tread::Reader> {
     self
       .reader_secondary_tabs
       .get_mut(self.reader_secondary_active_tab)
-      .map(|t| &mut t.editor)
+      .map(|t| &mut t.reader)
   }
 
-  pub fn reader_push_tab(&mut self, title: String, editor: cli_text_reader::Editor) {
-    self.reader_tabs.push(ReaderTab { title, editor });
+  /// Active primary tab as a whole — exposes both the Reader and its
+  /// ImageState in one borrow.  Call sites that drive `tread::after_draw`
+  /// or `tread::clear_images` need both.
+  pub fn reader_active_tab_mut(&mut self) -> Option<&mut ReaderTab> {
+    self.reader_tabs.get_mut(self.reader_active_tab)
+  }
+
+  pub fn reader_secondary_active_tab_mut(&mut self) -> Option<&mut ReaderTab> {
+    self
+      .reader_secondary_tabs
+      .get_mut(self.reader_secondary_active_tab)
+  }
+
+  pub fn reader_push_tab(
+    &mut self,
+    title: String,
+    arxiv_id: Option<String>,
+    paper_ref: Option<notes::PaperRef>,
+    reader: tread::Reader,
+  ) {
+    self.reader_tabs.push(ReaderTab {
+      title,
+      arxiv_id,
+      paper_ref,
+      reader,
+      image_state: tread::ImageState::default(),
+    });
     self.reader_active_tab = self.reader_tabs.len() - 1;
     self.reader_active = true;
   }
@@ -2561,21 +2738,37 @@ impl App {
   pub fn reader_secondary_push_tab(
     &mut self,
     title: String,
-    editor: cli_text_reader::Editor,
+    arxiv_id: Option<String>,
+    paper_ref: Option<notes::PaperRef>,
+    reader: tread::Reader,
   ) {
-    self.reader_secondary_tabs.push(ReaderTab { title, editor });
+    self.reader_secondary_tabs.push(ReaderTab {
+      title,
+      arxiv_id,
+      paper_ref,
+      reader,
+      image_state: tread::ImageState::default(),
+    });
     self.reader_secondary_active_tab = self.reader_secondary_tabs.len() - 1;
   }
 
   pub fn reader_replace_active_tab(
     &mut self,
     title: String,
-    editor: cli_text_reader::Editor,
+    arxiv_id: Option<String>,
+    paper_ref: Option<notes::PaperRef>,
+    reader: tread::Reader,
   ) {
     if self.reader_tabs.is_empty() {
-      self.reader_push_tab(title, editor);
+      self.reader_push_tab(title, arxiv_id, paper_ref, reader);
     } else {
-      self.reader_tabs[self.reader_active_tab] = ReaderTab { title, editor };
+      self.reader_tabs[self.reader_active_tab] = ReaderTab {
+        title,
+        arxiv_id,
+        paper_ref,
+        reader,
+        image_state: tread::ImageState::default(),
+      };
       self.reader_active = true;
     }
   }
@@ -2583,13 +2776,20 @@ impl App {
   pub fn reader_secondary_replace_active_tab(
     &mut self,
     title: String,
-    editor: cli_text_reader::Editor,
+    arxiv_id: Option<String>,
+    paper_ref: Option<notes::PaperRef>,
+    reader: tread::Reader,
   ) {
     if self.reader_secondary_tabs.is_empty() {
-      self.reader_secondary_push_tab(title, editor);
+      self.reader_secondary_push_tab(title, arxiv_id, paper_ref, reader);
     } else {
-      self.reader_secondary_tabs[self.reader_secondary_active_tab] =
-        ReaderTab { title, editor };
+      self.reader_secondary_tabs[self.reader_secondary_active_tab] = ReaderTab {
+        title,
+        arxiv_id,
+        paper_ref,
+        reader,
+        image_state: tread::ImageState::default(),
+      };
     }
   }
 

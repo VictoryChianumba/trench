@@ -1185,25 +1185,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // changes; the spinner increment is now gated on is_loading.
     app.process_incoming();
 
-    // Tick the embedded reader(s) each frame (voice sync, demo hints, etc.).
-    // The editor manages its own needs_redraw; bridge it back into trench's
-    // dirty flag so trench's outer redraw cycle picks up editor mutations
-    // (e.g., voice highlight advance, demo-hint TTL expiry).
+    // Tick the embedded reader(s) each frame so voice playback state
+    // (active-word highlight, paragraph advance during continuous
+    // reading) animates without waiting for a key event.  tread::tick
+    // returns true when user-visible state changed; we OR that into
+    // trench's dirty flag so the next frame redraws.
     if let Some(editor) = app.reader_editor_mut() {
-      editor.tick();
-      if editor.check_needs_redraw() {
+      if editor.tick() {
         app.mark_dirty();
       }
     }
     if let Some(editor) = app.reader_secondary_editor_mut() {
-      editor.tick();
-      if editor.check_needs_redraw() {
+      if editor.tick() {
         app.mark_dirty();
       }
     }
     if let Some(editor) = app.reader_popup_editor.as_mut() {
-      editor.tick();
-      if editor.check_needs_redraw() {
+      if editor.tick() {
         app.mark_dirty();
       }
     }
@@ -1246,22 +1244,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           match result {
             Ok(lines) => {
               log::debug!("reader_open: {} lines", lines.len());
-              let editor = cli_text_reader::Editor::new(lines, 80);
+              // Trench's fulltext fetch worker hands us pre-extracted
+              // plain-text lines (PDF / EPUB / HTML).  Wrap as a tread
+              // PaperData with one Block::Line per line; arxiv_id is
+              // None because we don't yet route arxiv content through
+              // tread's `fetch_paper`.  Initial dimensions are a guess;
+              // tread reflows on the first resize.  kitty_supported =
+              // false because plain text has no images to render.
+              let paper = tread::PaperData::from_plain_lines(lines);
+              let reader = tread::Reader::init(
+                paper, None, None, 80, 24, false,
+                Some(app.voice_controller.clone()),
+              );
               let title = app.last_read.clone().unwrap_or_default();
+              let paper_ref = app.pending_fulltext_paper.take();
+              let arxiv_id = paper_ref.as_ref().map(|paper| paper.id.clone());
               if app.fulltext_for_secondary {
                 if app.fulltext_new_tab {
-                  app.reader_secondary_push_tab(title, editor);
+                  app.reader_secondary_push_tab(
+                    title,
+                    arxiv_id,
+                    paper_ref,
+                    reader,
+                  );
                 } else {
-                  app.reader_secondary_replace_active_tab(title, editor);
+                  app.reader_secondary_replace_active_tab(
+                    title,
+                    arxiv_id,
+                    paper_ref,
+                    reader,
+                  );
                 }
                 app.focused_reader = FocusedReader::Secondary;
                 app.focused_pane = PaneId::SecondaryReader;
                 app.fulltext_for_secondary = false;
               } else {
                 if app.fulltext_new_tab {
-                  app.reader_push_tab(title, editor);
+                  app.reader_push_tab(title, arxiv_id, paper_ref, reader);
                 } else {
-                  app.reader_replace_active_tab(title, editor);
+                  app.reader_replace_active_tab(
+                    title,
+                    arxiv_id,
+                    paper_ref,
+                    reader,
+                  );
                 }
                 app.focused_pane = PaneId::Reader;
               }
@@ -1269,6 +1295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               app.clear_notification();
             }
             Err(e) => {
+              app.pending_fulltext_paper = None;
               app.set_notification(format!("Failed to fetch content: {e}"));
             }
           }
@@ -1280,6 +1307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           app.fulltext_loading = false;
           app.fulltext_for_secondary = false;
           app.fulltext_new_tab = false;
+          app.pending_fulltext_paper = None;
           app.set_notification("Fetch error: thread disconnected".to_string());
           app.mark_dirty();
         }
@@ -1293,10 +1321,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(result) => {
           app.reader_popup_rx = None;
           app.fulltext_loading = false;
+          app.pending_fulltext_paper = None;
           match result {
             Ok(lines) => {
-              let editor = cli_text_reader::Editor::new(lines, 80);
-              app.reader_popup_editor = Some(editor);
+              let paper = tread::PaperData::from_plain_lines(lines);
+              let reader = tread::Reader::init(
+                paper, None, None, 80, 24, false,
+                Some(app.voice_controller.clone()),
+              );
+              app.reader_popup_editor = Some(reader);
+              // Reset the popup's image cache to a fresh state — the
+              // previous occupant (if any) had different kitty_ids.
+              app.reader_popup_image_state = tread::ImageState::default();
               app.reader_popup_active = true;
               app.clear_notification();
             }
@@ -1309,6 +1345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
           app.reader_popup_rx = None;
           app.fulltext_loading = false;
+          app.pending_fulltext_paper = None;
           app.set_notification("Fetch error: thread disconnected".to_string());
           app.mark_dirty();
         }

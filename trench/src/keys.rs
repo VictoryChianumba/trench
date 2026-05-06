@@ -1,10 +1,10 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::sync::mpsc;
 
 use crate::app::{
   App, AppView, CustomThemeEditorMode, CustomThemeEditorState, DiscoverResult,
-  FeedTab, FocusedReader, NavDirection, NotesTab, PaneId, QuitPopupKind,
-  RepoContext, RepoPane, SourcesDetectState,
+  FeedTab, FocusedReader, NavDirection, NotesMode, NotesTab, PaneId,
+  QuitPopupKind, RepoContext, RepoPane, SourcesDetectState,
 };
 use crate::config::{self, CUSTOM_THEME_ROLES, CustomThemeConfig};
 use crate::models::WorkflowState;
@@ -69,9 +69,9 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
   if app.reader_popup_active {
     if key.code == KeyCode::Esc {
       app.reader_popup_active = false;
-    } else if let Some(editor) = app.reader_popup_editor.as_mut() {
-      let action = editor.handle_key(key);
-      if matches!(action, cli_text_reader::EditorAction::Quit) {
+    } else if let Some(reader) = app.reader_popup_editor.as_mut() {
+      let action = reader.handle_event(Event::Key(key));
+      if matches!(action, tread::ReaderAction::Quit) {
         app.reader_popup_active = false;
       }
     }
@@ -257,13 +257,7 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
           app.fulltext_loading = true;
           app.fulltext_for_secondary =
             app.focused_reader == FocusedReader::Secondary;
-          app.last_read = Some(item.title.clone());
-          app.last_read_source = Some(if item.source_name.is_empty() {
-            item.source_platform.short_label().to_string()
-          } else {
-            item.source_name.clone()
-          });
-          app.record_paper_open(&item);
+          remember_fulltext_paper_context(app, &item);
           app.set_notification(format!(
             "Fetching: {}…",
             truncate_for_notif(&item.title, 40)
@@ -360,10 +354,8 @@ fn handle_leader_or_ctrl_t(key: KeyEvent, app: &mut App) -> bool {
 }
 
 fn open_notes(app: &mut App) {
-  let Some(item) = app.selected_item().cloned() else {
-    return;
-  };
   let side = note_side_for_focus(app);
+  let context_paper = resolve_notes_paper_context(app, side);
 
   if app.notes_app.is_none() {
     let mut na = notes::app::App::new();
@@ -391,57 +383,71 @@ fn open_notes(app: &mut App) {
   let linked = app
     .notes_app
     .as_ref()
-    .map(|na| na.find_notes_for_paper(&item.id))
+    .map(|na| {
+      context_paper
+        .as_ref()
+        .map(|paper| na.find_notes_for_paper(&paper.id))
+        .unwrap_or_default()
+    })
     .unwrap_or_default();
 
-  if linked.is_empty() {
-    // No note linked yet — open create popup pre-filled with article title.
-    if let Some(na) = app.notes_app.as_mut() {
-      if na.focused_note_id().is_none() {
-        na.focus_article(&item.id, &item.title, &item.url);
+  app.set_notes_context_paper_for_side(side, context_paper.clone());
+
+  if let Some(paper) = context_paper {
+    if linked.is_empty() {
+      app.set_notes_mode_for_side(side, NotesMode::Capture);
+      if let Some(na) = app.notes_app.as_mut() {
+        na.focus_article(&paper.id, &paper.title, &paper.url);
         na.apply_initial_focus();
+      }
+    } else {
+      app.set_notes_mode_for_side(side, NotesMode::PaperNotes);
+      for note_id in &linked {
+        let exists = match side {
+          FocusedReader::Primary => {
+            app.notes_tabs.iter().any(|t| &t.note_id == note_id)
+          }
+          FocusedReader::Secondary => {
+            app.secondary_notes_tabs.iter().any(|t| &t.note_id == note_id)
+          }
+        };
+        if !exists {
+          let title = app
+            .notes_app
+            .as_ref()
+            .and_then(|na| na.get_note_title(note_id))
+            .unwrap_or_default();
+          match side {
+            FocusedReader::Primary => {
+              app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+            }
+            FocusedReader::Secondary => {
+              app
+                .secondary_notes_tabs
+                .push(NotesTab { note_id: note_id.clone(), title });
+            }
+          }
+        }
+      }
+      let idx = match side {
+        FocusedReader::Primary => {
+          app.notes_tabs.iter().position(|t| linked.contains(&t.note_id))
+        }
+        FocusedReader::Secondary => app
+          .secondary_notes_tabs
+          .iter()
+          .position(|t| linked.contains(&t.note_id)),
+      };
+      if let Some(idx) = idx {
+        notes_switch_tab(app, side, idx);
       }
     }
   } else {
-    // Add any linked notes as new tabs (dedup), then activate the first one.
-    for note_id in &linked {
-      let exists = match side {
-        FocusedReader::Primary => {
-          app.notes_tabs.iter().any(|t| &t.note_id == note_id)
-        }
-        FocusedReader::Secondary => {
-          app.secondary_notes_tabs.iter().any(|t| &t.note_id == note_id)
-        }
-      };
-      if !exists {
-        let title = app
-          .notes_app
-          .as_ref()
-          .and_then(|na| na.get_note_title(note_id))
-          .unwrap_or_default();
-        match side {
-          FocusedReader::Primary => {
-            app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
-          }
-          FocusedReader::Secondary => {
-            app
-              .secondary_notes_tabs
-              .push(NotesTab { note_id: note_id.clone(), title });
-          }
-        }
+    app.set_notes_mode_for_side(side, NotesMode::Library);
+    if let Some(na) = app.notes_app.as_mut() {
+      if na.focused_note_id().is_none() {
+        na.apply_initial_focus();
       }
-    }
-    let idx = match side {
-      FocusedReader::Primary => {
-        app.notes_tabs.iter().position(|t| linked.contains(&t.note_id))
-      }
-      FocusedReader::Secondary => app
-        .secondary_notes_tabs
-        .iter()
-        .position(|t| linked.contains(&t.note_id)),
-    };
-    if let Some(idx) = idx {
-      notes_switch_tab(app, side, idx);
     }
   }
 
@@ -577,6 +583,115 @@ fn ensure_chat(app: &mut App) {
     Some(chat::ChatUi::new(registry, default_provider, slash_commands));
 }
 
+fn paper_ref_from_item(item: &crate::models::FeedItem) -> notes::PaperRef {
+  notes::PaperRef {
+    id: item.id.clone(),
+    title: item.title.clone(),
+    url: item.url.clone(),
+  }
+}
+
+fn remember_fulltext_paper_context(
+  app: &mut App,
+  item: &crate::models::FeedItem,
+) {
+  app.last_read = Some(item.title.clone());
+  app.last_read_source = Some(if item.source_name.is_empty() {
+    item.source_platform.short_label().to_string()
+  } else {
+    item.source_name.clone()
+  });
+  app.pending_fulltext_paper = Some(paper_ref_from_item(item));
+  app.record_paper_open(item);
+}
+
+fn find_item_by_url<'a>(
+  app: &'a App,
+  url: &str,
+) -> Option<&'a crate::models::FeedItem> {
+  app
+    .url_index
+    .get(url)
+    .and_then(|&idx| app.items.get(idx))
+    .or_else(|| {
+      app
+        .discovery_url_index
+        .get(url)
+        .and_then(|&idx| app.discovery_items.get(idx))
+    })
+}
+
+fn find_item_by_arxiv_id<'a>(
+  app: &'a App,
+  arxiv_id: &str,
+) -> Option<&'a crate::models::FeedItem> {
+  app
+    .arxiv_id_index
+    .get(arxiv_id)
+    .and_then(|&idx| app.items.get(idx))
+    .or_else(|| {
+      app
+        .discovery_arxiv_id_index
+        .get(arxiv_id)
+        .and_then(|&idx| app.discovery_items.get(idx))
+    })
+}
+
+fn paper_ref_from_history_entry(
+  app: &App,
+  entry: &crate::history::HistoryEntry,
+) -> Option<notes::PaperRef> {
+  if entry.kind != crate::history::HistoryKind::Paper {
+    return None;
+  }
+  if let Some(item) = find_item_by_url(app, &entry.key) {
+    return Some(paper_ref_from_item(item));
+  }
+  if let Some(arxiv_id) = crate::models::arxiv_id_from_url(&entry.key) {
+    if let Some(item) = find_item_by_arxiv_id(app, arxiv_id) {
+      return Some(paper_ref_from_item(item));
+    }
+    return Some(notes::PaperRef {
+      id: arxiv_id.to_string(),
+      title: entry.title.clone(),
+      url: entry.key.clone(),
+    });
+  }
+  Some(notes::PaperRef {
+    id: entry.key.clone(),
+    title: entry.title.clone(),
+    url: entry.key.clone(),
+  })
+}
+
+fn history_selected_paper_ref(app: &App) -> Option<notes::PaperRef> {
+  let visible = app.filtered_history();
+  let entry = visible.get(app.history_selected_index)?;
+  paper_ref_from_history_entry(app, entry)
+}
+
+fn resolve_notes_paper_context(
+  app: &App,
+  side: FocusedReader,
+) -> Option<notes::PaperRef> {
+  match app.focused_pane {
+    PaneId::Reader => app.reader_paper_ref(FocusedReader::Primary),
+    PaneId::SecondaryReader => app.reader_paper_ref(FocusedReader::Secondary),
+    PaneId::Notes | PaneId::SecondaryNotes => app
+      .notes_context_paper_for_side(side)
+      .cloned()
+      .or_else(|| app.reader_paper_ref(side)),
+    PaneId::Feed | PaneId::Details => {
+      if app.feed_tab == FeedTab::History {
+        history_selected_paper_ref(app)
+      } else {
+        app.selected_item().map(paper_ref_from_item)
+      }
+    }
+    _ => app.selected_item().map(paper_ref_from_item),
+  }
+}
+
 fn handle_leader(key: KeyEvent, app: &mut App) {
   log::debug!("leader dispatch: {:?}", key.code);
   let is_nav = matches!(
@@ -645,13 +760,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
           let (tx, rx) = mpsc::channel();
           app.reader_popup_rx = Some(rx);
           app.fulltext_loading = true;
-          app.last_read = Some(item.title.clone());
-          app.last_read_source = Some(if item.source_name.is_empty() {
-            item.source_platform.short_label().to_string()
-          } else {
-            item.source_name.clone()
-          });
-          app.record_paper_open(&item);
+          remember_fulltext_paper_context(app, &item);
           app.set_notification(format!(
             "Fetching: {}…",
             truncate_for_notif(&item.title, 40)
@@ -688,13 +797,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
             let (tx, rx) = mpsc::channel();
             app.fulltext_rx = Some(rx);
             app.fulltext_loading = true;
-            app.last_read = Some(item.title.clone());
-            app.last_read_source = Some(if item.source_name.is_empty() {
-              item.source_platform.short_label().to_string()
-            } else {
-              item.source_name.clone()
-            });
-            app.record_paper_open(&item);
+            remember_fulltext_paper_context(app, &item);
             app.set_notification(format!(
               "Loading: {}…",
               truncate_for_notif(&item.title, 40)
@@ -1010,13 +1113,7 @@ fn trigger_fulltext_new_tab(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     app.fulltext_rx = Some(rx);
     app.fulltext_loading = true;
-    app.last_read = Some(item.title.clone());
-    app.last_read_source = Some(if item.source_name.is_empty() {
-      item.source_platform.short_label().to_string()
-    } else {
-      item.source_name.clone()
-    });
-    app.record_paper_open(&item);
+    remember_fulltext_paper_context(app, &item);
     app.set_notification(format!(
       "Fetching: {}…",
       truncate_for_notif(&item.title, 40)
@@ -1086,6 +1183,9 @@ fn handle_notes_pane(key: KeyEvent, app: &mut App) -> bool {
         {
           app.notes_active_tab = idx;
         }
+        if app.notes_mode_for_side(side) == NotesMode::Capture {
+          app.set_notes_mode_for_side(side, NotesMode::PaperNotes);
+        }
       }
       FocusedReader::Secondary => {
         if !app.secondary_notes_tabs.iter().any(|t| t.note_id == note_id) {
@@ -1097,6 +1197,9 @@ fn handle_notes_pane(key: KeyEvent, app: &mut App) -> bool {
           app.secondary_notes_tabs.iter().position(|t| t.note_id == note_id)
         {
           app.secondary_notes_active_tab = idx;
+        }
+        if app.notes_mode_for_side(side) == NotesMode::Capture {
+          app.set_notes_mode_for_side(side, NotesMode::PaperNotes);
         }
       }
     }
@@ -1125,10 +1228,10 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
         return true;
       }
     }
-    if let Some(editor) = app.reader_secondary_editor_mut() {
-      let action = editor.handle_key(key);
+    if let Some(reader) = app.reader_secondary_editor_mut() {
+      let action = reader.handle_event(Event::Key(key));
       // q: close the current secondary tab; collapse to primary when empty.
-      if matches!(action, cli_text_reader::EditorAction::Quit) {
+      if matches!(action, tread::ReaderAction::Quit) {
         let pane_empty = app.reader_secondary_close_active_tab();
         if pane_empty {
           app.reader_dual_active = false;
@@ -1169,10 +1272,10 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
     }
   }
 
-  if let Some(editor) = app.reader_editor_mut() {
-    let action = editor.handle_key(key);
+  if let Some(reader) = app.reader_editor_mut() {
+    let action = reader.handle_event(Event::Key(key));
     // q: close the current tab; apply state machine only when the pane goes empty.
-    if matches!(action, cli_text_reader::EditorAction::Quit) {
+    if matches!(action, tread::ReaderAction::Quit) {
       let pane_empty = app.reader_close_active_tab();
       if pane_empty {
         if app.reader_dual_active {
@@ -2299,13 +2402,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
               app.fulltext_loading = true;
               app.fulltext_for_secondary = false;
               app.narrow_feed_details_open = false;
-              app.last_read = Some(item.title.clone());
-              app.last_read_source = Some(if item.source_name.is_empty() {
-                item.source_platform.short_label().to_string()
-              } else {
-                item.source_name.clone()
-              });
-              app.record_paper_open(&item);
+              remember_fulltext_paper_context(app, &item);
               app.set_notification(format!(
                 "Fetching: {}…",
                 truncate_for_notif(&item.title, 40)
@@ -2376,13 +2473,7 @@ fn handle_feed_view(key: KeyEvent, app: &mut App) {
       KeyCode::Enter => {
         if !app.fulltext_loading {
           if let Some(item) = app.selected_item().cloned() {
-            app.last_read = Some(item.title.clone());
-            app.last_read_source = Some(if item.source_name.is_empty() {
-              item.source_platform.short_label().to_string()
-            } else {
-              item.source_name.clone()
-            });
-            app.record_paper_open(&item);
+            remember_fulltext_paper_context(app, &item);
             {
               log::debug!(
                 "feed Enter: spawning fulltext fetch for url={}",
@@ -2742,13 +2833,7 @@ fn handle_history_tab(key: KeyEvent, app: &mut App) -> bool {
           // Reconstruct enough of FeedItem from history meta and reopen.
           if let Some(meta) = entry.paper_meta.clone() {
             let item = reconstruct_feed_item(&entry, &meta);
-            app.last_read = Some(item.title.clone());
-            app.last_read_source = Some(if item.source_name.is_empty() {
-              item.source_platform.short_label().to_string()
-            } else {
-              item.source_name.clone()
-            });
-            app.record_paper_open(&item);
+            remember_fulltext_paper_context(app, &item);
             app.fulltext_loading = true;
             app.set_notification(format!(
               "Fetching: {}…",

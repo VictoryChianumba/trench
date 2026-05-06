@@ -622,11 +622,39 @@ fn note_pane_for_side(side: FocusedReader) -> PaneId {
   }
 }
 
-fn draw_note_dock(
+fn draw_notes_context_line(
+  frame: &mut Frame,
+  area: Rect,
+  app: &App,
+  side: FocusedReader,
+  t: &crate::theme::Theme,
+) {
+  let mode = app.notes_mode_for_side(side);
+  let text = match (mode, app.notes_context_paper_for_side(side)) {
+    (crate::app::NotesMode::PaperNotes, Some(paper)) => {
+      format!("paper  {}", truncate(&paper.title, area.width as usize))
+    }
+    (crate::app::NotesMode::Capture, Some(paper)) => {
+      format!("new note  {}", truncate(&paper.title, area.width as usize))
+    }
+    (crate::app::NotesMode::Library, _) => "all notes".to_string(),
+    (_, None) => "no paper context".to_string(),
+  };
+  frame.render_widget(
+    Paragraph::new(Line::from(Span::styled(
+      text,
+      Style::default().fg(t.text_dim),
+    ))),
+    area,
+  );
+}
+
+fn draw_notes_surface(
   frame: &mut Frame,
   app: &mut App,
   area: Rect,
   side: FocusedReader,
+  preview_when_unfocused: bool,
   theme: &crate::theme::Theme,
 ) {
   if area.height == 0 || area.width == 0 {
@@ -635,26 +663,40 @@ fn draw_note_dock(
   let is_focused = app.focused_pane == note_pane_for_side(side);
   let (tabs, active) = note_tabs_for_side(app, side);
   let tabs = tabs.to_vec();
-  let title = match side {
-    FocusedReader::Primary => "Notes",
-    FocusedReader::Secondary => "Notes",
-  };
   let rows = Layout::vertical([
+    Constraint::Length(1),
     Constraint::Length(1),
     Constraint::Length(1),
     Constraint::Min(0),
   ])
   .split(area);
-  draw_note_dock_rule(frame, rows[0], title, is_focused, theme);
-  draw_notes_tab_bar(frame, rows[1], &tabs, active, is_focused, theme);
+  draw_note_dock_rule(
+    frame,
+    rows[0],
+    app.notes_mode_for_side(side).title(),
+    is_focused,
+    theme,
+  );
+  draw_notes_context_line(frame, rows[1], app, side, theme);
+  draw_notes_tab_bar(frame, rows[2], &tabs, active, is_focused, theme);
 
-  if is_focused {
+  if is_focused || !preview_when_unfocused {
     if let Some(notes_app) = app.notes_app.as_mut() {
-      notes::draw(frame, rows[2], notes_app, theme);
+      notes::draw(frame, rows[3], notes_app, theme);
     }
   } else {
-    draw_note_preview(frame, app, rows[2], &tabs, active, theme);
+    draw_note_preview(frame, app, rows[3], &tabs, active, theme);
   }
+}
+
+fn draw_note_dock(
+  frame: &mut Frame,
+  app: &mut App,
+  area: Rect,
+  side: FocusedReader,
+  theme: &crate::theme::Theme,
+) {
+  draw_notes_surface(frame, app, area, side, true, theme);
 }
 
 fn draw_note_dock_rule(
@@ -731,6 +773,9 @@ fn draw_note_preview(
 fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
   let theme = app.theme();
   let t = theme;
+  // Tread's `Theme` is a sibling type from a separate `ui_theme` crate
+  // — we can't pass `&t` directly.  Convert once per draw cycle.
+  let tread_theme = app.theme_for_tread();
   // ── A2 State 3: dual-reader (left 50% | right 50%) ──────────────────────
   if app.reader_dual_active && app.reader_active {
     let (workspace_area, body_area) = reader_workspace_split(area);
@@ -770,8 +815,8 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
         &t,
       );
       if let Some(editor) = app.reader_editor_mut() {
-        editor.update_layout(rows[1]);
-        cli_text_reader::draw_editor(frame, rows[1], editor);
+        editor.resize(rows[1].width, rows[1].height);
+        tread::draw(frame, rows[1], editor, &tread_theme);
       }
     }
     {
@@ -787,8 +832,8 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
         &t,
       );
       if let Some(editor) = app.reader_secondary_editor_mut() {
-        editor.update_layout(rows[1]);
-        cli_text_reader::draw_editor(frame, rows[1], editor);
+        editor.resize(rows[1].width, rows[1].height);
+        tread::draw(frame, rows[1], editor, &tread_theme);
       } else {
         let hint = Paragraph::new(
           "No paper loaded\n\nLdr+f → open feed · Enter to load",
@@ -841,8 +886,8 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
         &t,
       );
       if let Some(editor) = app.reader_editor_mut() {
-        editor.update_layout(rows[1]);
-        cli_text_reader::draw_editor(frame, rows[1], editor);
+        editor.resize(rows[1].width, rows[1].height);
+        tread::draw(frame, rows[1], editor, &tread_theme);
       }
     }
     if app.narrow_feed_details_open {
@@ -873,10 +918,10 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
       &t,
     );
     if let Some(editor) = app.reader_editor_mut() {
-      let t = std::time::Instant::now();
-      editor.update_layout(rows[1]);
-      cli_text_reader::draw_editor(frame, rows[1], editor);
-      log::debug!("draw_editor (full-width): {}ms", t.elapsed().as_millis());
+      let elapsed = std::time::Instant::now();
+      editor.resize(rows[1].width, rows[1].height);
+      tread::draw(frame, rows[1], editor, &tread_theme);
+      log::debug!("draw_editor (full-width): {}ms", elapsed.elapsed().as_millis());
     }
     return MainRowRects {
       feed: None,
@@ -904,10 +949,10 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
         &t,
       );
       if let Some(editor) = app.reader_editor_mut() {
-        let t = std::time::Instant::now();
-        editor.update_layout(rows[1]);
-        cli_text_reader::draw_editor(frame, rows[1], editor);
-        log::debug!("draw_editor (split): {}ms", t.elapsed().as_millis());
+        let elapsed = std::time::Instant::now();
+        editor.resize(rows[1].width, rows[1].height);
+        tread::draw(frame, rows[1], editor, &tread_theme);
+        log::debug!("draw_editor (split): {}ms", elapsed.elapsed().as_millis());
       }
     }
     draw_note_dock(frame, app, notes_rect, FocusedReader::Primary, &theme);
@@ -924,7 +969,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
   // ── Narrow mode (< 100 cols): vertical stack — feed top, details/notes bottom ──
   if area.width < 100 {
     let bottom_title = if app.notes_active {
-      "Notes"
+      app.notes_mode.title()
     } else if app.filter_focus {
       "Filters"
     } else {
@@ -939,22 +984,16 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
 
     let mut details_rect: Option<Rect> = None;
     if app.notes_active {
-      if let Some(notes_app) = app.notes_app.as_mut() {
-        let t = std::time::Instant::now();
-        let rows =
-          Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
-            .split(bottom_rect);
-        draw_notes_tab_bar(
-          frame,
-          rows[0],
-          &app.notes_tabs,
-          app.notes_active_tab,
-          app.focused_pane == PaneId::Notes,
-          &theme,
-        );
-        notes::draw(frame, rows[1], notes_app, &theme);
-        log::debug!("notes::draw (narrow): {}ms", t.elapsed().as_millis());
-      }
+      let t = std::time::Instant::now();
+      draw_notes_surface(
+        frame,
+        app,
+        bottom_rect,
+        FocusedReader::Primary,
+        false,
+        &theme,
+      );
+      log::debug!("notes::draw (narrow): {}ms", t.elapsed().as_millis());
     } else if app.filter_focus {
       let t = std::time::Instant::now();
       draw_filter_panel(frame, app, bottom_rect);
@@ -984,7 +1023,7 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
     RIGHT_COL_WIDTH.min(inner_w.saturating_sub(2))
   };
   let right_title = if app.notes_active {
-    "Notes"
+    app.notes_mode.title()
   } else if app.filter_focus {
     "Filters"
   } else {
@@ -1000,21 +1039,16 @@ fn draw_main_row(frame: &mut Frame, app: &mut App, area: Rect) -> MainRowRects {
 
   let mut details_rect: Option<Rect> = None;
   if app.notes_active {
-    if let Some(notes_app) = app.notes_app.as_mut() {
-      let t = std::time::Instant::now();
-      let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
-        .split(right_rect);
-      draw_notes_tab_bar(
-        frame,
-        rows[0],
-        &app.notes_tabs,
-        app.notes_active_tab,
-        app.focused_pane == PaneId::Notes,
-        &theme,
-      );
-      notes::draw(frame, rows[1], notes_app, &theme);
-      log::debug!("notes::draw: {}ms", t.elapsed().as_millis());
-    }
+    let t = std::time::Instant::now();
+    draw_notes_surface(
+      frame,
+      app,
+      right_rect,
+      FocusedReader::Primary,
+      false,
+      &theme,
+    );
+    log::debug!("notes::draw: {}ms", t.elapsed().as_millis());
   } else if app.filter_focus {
     let t = std::time::Instant::now();
     draw_filter_panel(frame, app, right_rect);
@@ -3307,7 +3341,12 @@ fn footer_command_line(app: &App) -> Line<'static> {
     || (app.focused_pane == PaneId::SecondaryNotes
       && app.secondary_notes_active)
   {
-    spans.push(Span::styled("notes", accent));
+    let side = if app.focused_pane == PaneId::SecondaryNotes {
+      FocusedReader::Secondary
+    } else {
+      FocusedReader::Primary
+    };
+    spans.push(Span::styled(app.notes_mode_for_side(side).footer_label(), accent));
     spans.push(Span::styled(
       ": edit note | Ldr+[ / ] tabs | Ldr+w close | Ldr+n hide | ? help",
       ordinary,
@@ -3583,9 +3622,10 @@ fn draw_reader_popup(frame: &mut Frame, app: &mut App, area: Rect) {
   let inner = popup_inner(block_inner, 1, 1);
   frame.render_widget(block, popup_rect);
 
+  let tread_theme = app.theme_for_tread();
   if let Some(editor) = app.reader_popup_editor.as_mut() {
-    editor.update_layout(inner);
-    cli_text_reader::draw_editor(frame, inner, editor);
+    editor.resize(inner.width, inner.height);
+    tread::draw(frame, inner, editor, &tread_theme);
   }
 }
 
@@ -5312,7 +5352,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Reader",
         "Ldr+Enter popup · Ldr+f reader feed/drawer · Ldr+Esc back",
       ),
-      ("Ldr+n", "Toggle reader notes dock"),
+      ("Ldr+n", "Open notes from current context"),
       ("Ldr+c", "Toggle chat panel"),
       ("Ldr+z", "Move chat top / bottom"),
       ("Pane focus", "Ldr+h/j/k/l move by direction"),
@@ -5384,7 +5424,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
       ("vim keys", "Standard vim navigation"),
       ("Tab", "Switch primary / secondary pane"),
       ("Ldr+f", "Cycle reader feed / drawer layout"),
-      ("Ldr+n", "Toggle reader notes dock"),
+      ("Ldr+n", "Open notes for current paper"),
       ("q / Esc", "Close / step back reader state"),
       ("Feed drawer", "j/k move · d details · / search · Enter open"),
       ("", ""),
