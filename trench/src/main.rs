@@ -21,8 +21,10 @@ mod workflows;
 use app::{App, DiscoverResult, FocusedReader, PaneId, RepoFetchResult};
 use crossterm::{
   event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-    MouseButton, MouseEventKind,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange,
+    EnableMouseCapture, Event, KeyEventKind, KeyboardEnhancementFlags,
+    MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
   },
   execute,
   terminal::{
@@ -729,6 +731,27 @@ fn handle_mouse(
         match hovered {
           Some(PaneId::Details) => {}
           Some(PaneId::Notes) => {
+            if let Some(note_id) =
+              app.notes_tabs.get(app.notes_active_tab).map(|t| t.note_id.clone())
+            {
+              if let Some(notes_app) = app.notes_app.as_mut() {
+                notes_app.focus_note(&note_id);
+              }
+            }
+            if let Some(notes_app) = app.notes_app.as_mut() {
+              notes_app.select_next_note();
+            }
+          }
+          Some(PaneId::SecondaryNotes) => {
+            if let Some(note_id) = app
+              .secondary_notes_tabs
+              .get(app.secondary_notes_active_tab)
+              .map(|t| t.note_id.clone())
+            {
+              if let Some(notes_app) = app.notes_app.as_mut() {
+                notes_app.focus_note(&note_id);
+              }
+            }
             if let Some(notes_app) = app.notes_app.as_mut() {
               notes_app.select_next_note();
             }
@@ -753,6 +776,27 @@ fn handle_mouse(
         match hovered {
           Some(PaneId::Details) => {}
           Some(PaneId::Notes) => {
+            if let Some(note_id) =
+              app.notes_tabs.get(app.notes_active_tab).map(|t| t.note_id.clone())
+            {
+              if let Some(notes_app) = app.notes_app.as_mut() {
+                notes_app.focus_note(&note_id);
+              }
+            }
+            if let Some(notes_app) = app.notes_app.as_mut() {
+              notes_app.select_prev_note();
+            }
+          }
+          Some(PaneId::SecondaryNotes) => {
+            if let Some(note_id) = app
+              .secondary_notes_tabs
+              .get(app.secondary_notes_active_tab)
+              .map(|t| t.note_id.clone())
+            {
+              if let Some(notes_app) = app.notes_app.as_mut() {
+                notes_app.focus_note(&note_id);
+              }
+            }
             if let Some(notes_app) = app.notes_app.as_mut() {
               notes_app.select_prev_note();
             }
@@ -794,6 +838,35 @@ fn handle_mouse(
       // Click any focusable open pane → focus it.
       if let Some(pane) = app.focusable_pane_at(mouse.column, mouse.row) {
         app.focused_pane = pane;
+        match pane {
+          PaneId::Reader | PaneId::Notes => {
+            app.focused_reader = FocusedReader::Primary;
+            if pane == PaneId::Notes {
+              if let Some(note_id) =
+                app.notes_tabs.get(app.notes_active_tab).map(|t| t.note_id.clone())
+              {
+                if let Some(notes_app) = app.notes_app.as_mut() {
+                  notes_app.focus_note(&note_id);
+                }
+              }
+            }
+          }
+          PaneId::SecondaryReader | PaneId::SecondaryNotes => {
+            app.focused_reader = FocusedReader::Secondary;
+            if pane == PaneId::SecondaryNotes {
+              if let Some(note_id) = app
+                .secondary_notes_tabs
+                .get(app.secondary_notes_active_tab)
+                .map(|t| t.note_id.clone())
+              {
+                if let Some(notes_app) = app.notes_app.as_mut() {
+                  notes_app.focus_note(&note_id);
+                }
+              }
+            }
+          }
+          _ => {}
+        }
         if matches!(pane, PaneId::Feed) {
           app.filter_focus = false;
         }
@@ -1007,7 +1080,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   enable_raw_mode()?;
   let mut stdout = io::stdout();
-  execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+  // EnableFocusChange so the (eventual) embedded reader can detect tmux
+  // pane switches and clear pixel-image placements before they bleed
+  // across panes.  No effect on the feed UI — it ignores focus events.
+  // DISAMBIGUATE_ESCAPE_CODES so Shift+Enter and other modified specials
+  // are distinguishable from plain Enter — needed by tread for the
+  // citation-popup binding (`Shift+Enter` vs `Enter` for jump-to-link).
+  // Trench's existing keys.rs already uses `KeyCode::Enter` (not
+  // `Char('\n')`) at every Enter site, so this flag is a behaviour-
+  // preserving addition for the feed UI.  Terminals that don't speak
+  // the kitty keyboard protocol silently ignore the push.
+  execute!(
+    stdout,
+    EnterAlternateScreen,
+    EnableMouseCapture,
+    EnableFocusChange,
+  )?;
+  let _ = execute!(
+    stdout,
+    PushKeyboardEnhancementFlags(
+      KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+    ),
+  );
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend)?;
 
@@ -1030,6 +1124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // Clamp in case ui.json was written with a tab count that has since shrunk.
   app.notes_active_tab =
     ui.notes_active_tab.min(app.notes_tabs.len().saturating_sub(1));
+  app.secondary_notes_tabs = ui.secondary_notes_tabs;
+  app.secondary_notes_active_tab = ui
+    .secondary_notes_active_tab
+    .min(app.secondary_notes_tabs.len().saturating_sub(1));
 
   // 1. Load cache immediately → populate app.items.
   let cached = store::cache::load();
@@ -1353,9 +1451,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     last_read_source: app.last_read_source.clone(),
     notes_tabs:       app.notes_tabs.clone(),
     notes_active_tab: app.notes_active_tab,
+    secondary_notes_tabs:       app.secondary_notes_tabs.clone(),
+    secondary_notes_active_tab: app.secondary_notes_active_tab,
   });
 
+  // Balance the kitty-keyboard push from setup.  Ignored on terminals
+  // that didn't accept it.
+  let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
   disable_raw_mode()?;
-  execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+  execute!(
+    terminal.backend_mut(),
+    LeaveAlternateScreen,
+    DisableMouseCapture,
+    DisableFocusChange,
+  )?;
   Ok(())
 }

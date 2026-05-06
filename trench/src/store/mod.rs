@@ -123,6 +123,10 @@ pub struct UiState {
   pub notes_tabs:       Vec<NotesTab>,
   #[serde(default)]
   pub notes_active_tab: usize,
+  #[serde(default)]
+  pub secondary_notes_tabs:       Vec<NotesTab>,
+  #[serde(default)]
+  pub secondary_notes_active_tab: usize,
 }
 
 fn ui_path() -> Option<PathBuf> {

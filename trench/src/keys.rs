@@ -2,11 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::mpsc;
 
 use crate::app::{
-  App, AppView, CustomThemeEditorMode, CustomThemeEditorState,
-  DiscoverResult, FeedTab, FocusedReader, NavDirection, NotesTab, PaneId,
-  QuitPopupKind, RepoContext, RepoPane, SourcesDetectState,
+  App, AppView, CustomThemeEditorMode, CustomThemeEditorState, DiscoverResult,
+  FeedTab, FocusedReader, NavDirection, NotesTab, PaneId, QuitPopupKind,
+  RepoContext, RepoPane, SourcesDetectState,
 };
-use crate::config::{self, CustomThemeConfig, CUSTOM_THEME_ROLES};
+use crate::config::{self, CUSTOM_THEME_ROLES, CustomThemeConfig};
 use crate::models::WorkflowState;
 use ui_theme::ThemeId;
 
@@ -39,6 +39,7 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
                 app.reader_bottom_focused = false;
                 app.reader_secondary_tabs.clear();
                 app.reader_secondary_active_tab = 0;
+                app.secondary_notes_active = false;
               } else if app.reader_split_active {
                 app.reader_split_active = false;
               }
@@ -101,12 +102,6 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
     return;
   }
 
-  // State-3 bottom pane (A2) — handles its own key set when open and focused.
-  if app.reader_dual_active && app.reader_bottom_open && app.reader_bottom_focused {
-    handle_reader_bottom_pane(key, app);
-    return;
-  }
-
   if handle_help_overlay(key, app) {
     return;
   }
@@ -118,6 +113,14 @@ pub fn dispatch(key: KeyEvent, app: &mut App) {
     return;
   }
   if handle_leader_or_ctrl_t(key, app) {
+    return;
+  }
+  // State-3 bottom pane (A2) — handles its own key set when open and focused.
+  if app.reader_dual_active
+    && app.reader_bottom_open
+    && app.reader_bottom_focused
+  {
+    handle_reader_bottom_pane(key, app);
     return;
   }
   if handle_chat_pane(key, app) {
@@ -151,23 +154,54 @@ fn is_text_entry_context(app: &App) -> bool {
   if app.chat_active && app.focused_pane == PaneId::Chat {
     return true;
   }
-  if app.notes_active && app.focused_pane == PaneId::Notes {
+  if app.notes_active
+    && app.focused_pane == PaneId::Notes
+  {
     return true;
   }
-  app.custom_theme_editor
-    .as_ref()
-    .is_some_and(|editor| {
-      matches!(editor.mode, CustomThemeEditorMode::Name | CustomThemeEditorMode::Hex)
-    })
+  if app.secondary_notes_active && app.focused_pane == PaneId::SecondaryNotes
+  {
+    return true;
+  }
+  app.custom_theme_editor.as_ref().is_some_and(|editor| {
+    matches!(
+      editor.mode,
+      CustomThemeEditorMode::Name | CustomThemeEditorMode::Hex
+    )
+  })
 }
 
 fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
+  if app.search_active {
+    match key.code {
+      KeyCode::Esc => {
+        app.search_active = false;
+        app.search_query.clear();
+        app.reader_feed_popup_selected = 0;
+        app.invalidate_visible_cache();
+      }
+      KeyCode::Enter => {
+        app.search_active = false;
+      }
+      KeyCode::Backspace => {
+        app.pop_search_char();
+        clamp_reader_feed_selection(app);
+      }
+      KeyCode::Char(c) => {
+        app.push_search_char(c);
+        clamp_reader_feed_selection(app);
+      }
+      _ => {}
+    }
+    return;
+  }
+
   match key.code {
     KeyCode::Char('j') | KeyCode::Down => {
       if app.reader_bottom_details {
         app.reader_bottom_scroll = app.reader_bottom_scroll.saturating_add(1);
       } else {
-        let count = app.items_for_tab().len();
+        let count = app.visible_count();
         if count > 0 {
           app.reader_feed_popup_selected =
             (app.reader_feed_popup_selected + 1).min(count - 1);
@@ -189,6 +223,8 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
     KeyCode::Char('/') => {
       app.search_active = true;
       app.search_query.clear();
+      app.reader_feed_popup_selected = 0;
+      app.invalidate_visible_cache();
     }
     KeyCode::Tab => {
       app.feed_tab = match app.feed_tab {
@@ -211,7 +247,11 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
     KeyCode::Enter => {
       if !app.reader_bottom_details && !app.fulltext_loading {
         let idx = app.reader_feed_popup_selected;
-        if let Some(item) = app.items_for_tab().get(idx).cloned() {
+        let item = {
+          let visible = app.visible_items();
+          visible.get(idx).map(|item| (*item).clone())
+        };
+        if let Some(item) = item {
           let (tx, rx) = mpsc::channel();
           app.fulltext_rx = Some(rx);
           app.fulltext_loading = true;
@@ -253,6 +293,16 @@ fn handle_reader_bottom_pane(key: KeyEvent, app: &mut App) {
   }
 }
 
+fn clamp_reader_feed_selection(app: &mut App) {
+  let count = app.visible_count();
+  if count == 0 {
+    app.reader_feed_popup_selected = 0;
+  } else {
+    app.reader_feed_popup_selected =
+      app.reader_feed_popup_selected.min(count - 1);
+  }
+}
+
 // ── Help overlay ─────────────────────────────────────────────────────────────
 
 fn handle_help_overlay(key: KeyEvent, app: &mut App) -> bool {
@@ -261,8 +311,7 @@ fn handle_help_overlay(key: KeyEvent, app: &mut App) -> bool {
   }
   match key.code {
     KeyCode::Tab | KeyCode::Char('l') => {
-      app.help_section =
-        (app.help_section + 1) % crate::ui::HELP_SECTION_COUNT;
+      app.help_section = (app.help_section + 1) % crate::ui::HELP_SECTION_COUNT;
       app.help_scroll = 0;
     }
     KeyCode::BackTab | KeyCode::Char('h') => {
@@ -311,7 +360,10 @@ fn handle_leader_or_ctrl_t(key: KeyEvent, app: &mut App) -> bool {
 }
 
 fn open_notes(app: &mut App) {
-  let Some(item) = app.selected_item().cloned() else { return; };
+  let Some(item) = app.selected_item().cloned() else {
+    return;
+  };
+  let side = note_side_for_focus(app);
 
   if app.notes_app.is_none() {
     let mut na = notes::app::App::new();
@@ -325,11 +377,20 @@ fn open_notes(app: &mut App) {
   // Drop tabs whose note no longer exists (deleted notes, stale ui.json).
   if let Some(na) = app.notes_app.as_ref() {
     app.notes_tabs.retain(|t| na.get_note_title(&t.note_id).is_some());
-    app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len().saturating_sub(1));
+    app.notes_active_tab =
+      app.notes_active_tab.min(app.notes_tabs.len().saturating_sub(1));
+    app
+      .secondary_notes_tabs
+      .retain(|t| na.get_note_title(&t.note_id).is_some());
+    app.secondary_notes_active_tab = app
+      .secondary_notes_active_tab
+      .min(app.secondary_notes_tabs.len().saturating_sub(1));
   }
 
   // Phase 1: find linked notes and collect titles (releases borrow before switch).
-  let linked = app.notes_app.as_ref()
+  let linked = app
+    .notes_app
+    .as_ref()
     .map(|na| na.find_notes_for_paper(&item.id))
     .unwrap_or_default();
 
@@ -344,20 +405,156 @@ fn open_notes(app: &mut App) {
   } else {
     // Add any linked notes as new tabs (dedup), then activate the first one.
     for note_id in &linked {
-      if !app.notes_tabs.iter().any(|t| &t.note_id == note_id) {
-        let title = app.notes_app.as_ref()
+      let exists = match side {
+        FocusedReader::Primary => {
+          app.notes_tabs.iter().any(|t| &t.note_id == note_id)
+        }
+        FocusedReader::Secondary => {
+          app.secondary_notes_tabs.iter().any(|t| &t.note_id == note_id)
+        }
+      };
+      if !exists {
+        let title = app
+          .notes_app
+          .as_ref()
           .and_then(|na| na.get_note_title(note_id))
           .unwrap_or_default();
-        app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+        match side {
+          FocusedReader::Primary => {
+            app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+          }
+          FocusedReader::Secondary => {
+            app
+              .secondary_notes_tabs
+              .push(NotesTab { note_id: note_id.clone(), title });
+          }
+        }
       }
     }
-    if let Some(idx) = app.notes_tabs.iter().position(|t| linked.contains(&t.note_id)) {
-      notes_switch_tab(app, idx);
+    let idx = match side {
+      FocusedReader::Primary => {
+        app.notes_tabs.iter().position(|t| linked.contains(&t.note_id))
+      }
+      FocusedReader::Secondary => app
+        .secondary_notes_tabs
+        .iter()
+        .position(|t| linked.contains(&t.note_id)),
+    };
+    if let Some(idx) = idx {
+      notes_switch_tab(app, side, idx);
     }
   }
 
-  app.notes_active = true;
-  app.focused_pane = PaneId::Notes;
+  set_notes_side_active(app, side, true);
+  app.focused_pane = note_pane_for_side(app, side);
+}
+
+fn notes_side_active(app: &App, side: FocusedReader) -> bool {
+  match side {
+    FocusedReader::Primary => app.notes_active,
+    FocusedReader::Secondary => app.secondary_notes_active,
+  }
+}
+
+fn set_notes_side_active(app: &mut App, side: FocusedReader, active: bool) {
+  match side {
+    FocusedReader::Primary => app.notes_active = active,
+    FocusedReader::Secondary => app.secondary_notes_active = active,
+  }
+}
+
+fn any_notes_active(app: &App) -> bool {
+  app.notes_active || app.secondary_notes_active
+}
+
+fn note_side_for_focus(app: &App) -> FocusedReader {
+  match app.focused_pane {
+    PaneId::SecondaryReader | PaneId::SecondaryNotes => {
+      FocusedReader::Secondary
+    }
+    _ if app.reader_dual_active => app.focused_reader,
+    _ => FocusedReader::Primary,
+  }
+}
+
+fn note_pane_for_side(app: &App, side: FocusedReader) -> PaneId {
+  match side {
+    FocusedReader::Primary => PaneId::Notes,
+    FocusedReader::Secondary if app.reader_dual_active => {
+      PaneId::SecondaryNotes
+    }
+    FocusedReader::Secondary => PaneId::Notes,
+  }
+}
+
+fn focus_fallback_after_notes(app: &App, side: FocusedReader) -> PaneId {
+  match side {
+    FocusedReader::Secondary if app.reader_dual_active => {
+      PaneId::SecondaryReader
+    }
+    _ if app.reader_active => PaneId::Reader,
+    _ => PaneId::Feed,
+  }
+}
+
+fn focused_note_side(app: &App) -> Option<FocusedReader> {
+  match app.focused_pane {
+    PaneId::Notes => Some(FocusedReader::Primary),
+    PaneId::SecondaryNotes => Some(FocusedReader::Secondary),
+    _ => None,
+  }
+}
+
+fn sync_notes_app_to_side(app: &mut App, side: FocusedReader) {
+  app.focused_reader = side;
+  let note_id = match side {
+    FocusedReader::Primary => {
+      app.notes_tabs.get(app.notes_active_tab).map(|tab| tab.note_id.clone())
+    }
+    FocusedReader::Secondary => app
+      .secondary_notes_tabs
+      .get(app.secondary_notes_active_tab)
+      .map(|tab| tab.note_id.clone()),
+  };
+  if let (Some(na), Some(note_id)) = (app.notes_app.as_mut(), note_id) {
+    if na.current_note_id.as_deref() != Some(note_id.as_str()) {
+      na.set_current_note(Some(note_id));
+    }
+  }
+}
+
+fn sync_focus_after_pane_change(app: &mut App) {
+  match app.focused_pane {
+    PaneId::Reader | PaneId::Notes => {
+      app.focused_reader = FocusedReader::Primary
+    }
+    PaneId::SecondaryReader | PaneId::SecondaryNotes => {
+      app.focused_reader = FocusedReader::Secondary;
+    }
+    _ => {}
+  }
+  if let Some(side) = focused_note_side(app) {
+    sync_notes_app_to_side(app, side);
+  }
+}
+
+fn focus_reader_bottom_from_reader(app: &mut App) -> bool {
+  if !app.reader_dual_active || !app.reader_bottom_open {
+    return false;
+  }
+  match app.focused_pane {
+    PaneId::Reader | PaneId::Notes => {
+      app.focused_reader = FocusedReader::Primary;
+      app.reader_bottom_focused = true;
+      true
+    }
+    PaneId::SecondaryReader | PaneId::SecondaryNotes => {
+      app.focused_reader = FocusedReader::Secondary;
+      app.reader_bottom_focused = true;
+      true
+    }
+    _ => false,
+  }
 }
 
 fn ensure_chat(app: &mut App) {
@@ -366,21 +563,18 @@ fn ensure_chat(app: &mut App) {
   }
 
   let mut registry = chat::ProviderRegistry::new();
-  if let Some(k) = app.config.claude_api_key.as_ref().filter(|k| !k.is_empty()) {
-    registry.register(
-      "claude",
-      Box::new(chat::ClaudeProvider::new(k.clone())),
-    );
+  if let Some(k) = app.config.claude_api_key.as_ref().filter(|k| !k.is_empty())
+  {
+    registry.register("claude", Box::new(chat::ClaudeProvider::new(k.clone())));
   }
-  if let Some(k) = app.config.openai_api_key.as_ref().filter(|k| !k.is_empty()) {
-    registry.register(
-      "openai",
-      Box::new(chat::OpenAiProvider::new(k.clone())),
-    );
+  if let Some(k) = app.config.openai_api_key.as_ref().filter(|k| !k.is_empty())
+  {
+    registry.register("openai", Box::new(chat::OpenAiProvider::new(k.clone())));
   }
   let default_provider = app.config.default_chat_provider.clone();
   let slash_commands = crate::commands::registry::chat_slash_specs();
-  app.chat_ui = Some(chat::ChatUi::new(registry, default_provider, slash_commands));
+  app.chat_ui =
+    Some(chat::ChatUi::new(registry, default_provider, slash_commands));
 }
 
 fn handle_leader(key: KeyEvent, app: &mut App) {
@@ -398,10 +592,10 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
 
   match key.code {
     KeyCode::Char('n') => {
-      if app.notes_active {
-        app.notes_active = false;
-        app.focused_pane =
-          if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+      let side = note_side_for_focus(app);
+      if notes_side_active(app, side) {
+        set_notes_side_active(app, side, false);
+        app.focused_pane = focus_fallback_after_notes(app, side);
       } else {
         open_notes(app);
       }
@@ -415,20 +609,10 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       } else {
         ensure_chat(app);
         app.notes_active = false;
+        app.secondary_notes_active = false;
         app.chat_active = true;
         app.focused_pane = PaneId::Chat;
       }
-    }
-    KeyCode::Char('C') => {
-      ensure_chat(app);
-      app.notes_active = false;
-      app.chat_active = true;
-      app.chat_fullscreen = app
-        .chat_ui
-        .as_ref()
-        .is_some_and(|chat| chat.state == chat::ChatUiState::Chat)
-        && !app.chat_fullscreen;
-      app.focused_pane = PaneId::Chat;
     }
     KeyCode::Char('s') => {
       app.settings_github_token =
@@ -534,6 +718,9 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       app.show_quit_popup();
     }
     KeyCode::Char('h') => {
+      if app.reader_bottom_focused {
+        return;
+      }
       let t = std::time::Instant::now();
       let result = app.find_pane_in_direction(NavDirection::Left);
       log::debug!(
@@ -543,9 +730,13 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       );
       if let Some(pane) = result {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('j') => {
+      if focus_reader_bottom_from_reader(app) {
+        return;
+      }
       let t = std::time::Instant::now();
       let result = app.find_pane_in_direction(NavDirection::Down);
       log::debug!(
@@ -555,9 +746,18 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       );
       if let Some(pane) = result {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('k') => {
+      if app.reader_bottom_focused {
+        app.reader_bottom_focused = false;
+        app.focused_pane = match app.focused_reader {
+          FocusedReader::Primary => PaneId::Reader,
+          FocusedReader::Secondary => PaneId::SecondaryReader,
+        };
+        return;
+      }
       let t = std::time::Instant::now();
       let result = app.find_pane_in_direction(NavDirection::Up);
       log::debug!(
@@ -567,9 +767,13 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       );
       if let Some(pane) = result {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('l') => {
+      if app.reader_bottom_focused {
+        return;
+      }
       let t = std::time::Instant::now();
       let result = app.find_pane_in_direction(NavDirection::Right);
       log::debug!(
@@ -579,6 +783,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       );
       if let Some(pane) = result {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Esc => match app.focused_pane {
@@ -588,37 +793,48 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
         app.focused_pane =
           if app.reader_active { PaneId::Reader } else { PaneId::Feed };
       }
-      PaneId::Notes => {
+      PaneId::Notes | PaneId::SecondaryNotes => {
+        let side = focused_note_side(app).unwrap_or(FocusedReader::Primary);
         if let Some(na) = app.notes_app.as_mut() {
           let _ = na.persist_state();
         }
-        app.notes_active = false;
-        app.focused_pane =
-          if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+        set_notes_side_active(app, side, false);
+        app.focused_pane = focus_fallback_after_notes(app, side);
       }
       PaneId::SecondaryReader | PaneId::Reader => {
-        close_all_readers(app);
+        let side = if app.focused_pane == PaneId::SecondaryReader {
+          FocusedReader::Secondary
+        } else {
+          FocusedReader::Primary
+        };
+        if !reader_back(app, side) {
+          close_all_readers(app);
+        }
       }
       PaneId::Feed | PaneId::Details => {}
     },
     KeyCode::Char('0') => {
       if let Some(pane) = get_pane_by_number(0, app) {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('1') => {
       if let Some(pane) = get_pane_by_number(1, app) {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('2') => {
       if let Some(pane) = get_pane_by_number(2, app) {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     KeyCode::Char('3') => {
       if let Some(pane) = get_pane_by_number(3, app) {
         app.focused_pane = pane;
+        sync_focus_after_pane_change(app);
       }
     }
     // Ldr+t — open selected item as a new tab
@@ -628,7 +844,9 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
       }
       if app.reader_dual_active {
         app.tab_window_prompt_active = true;
-        app.set_notification("Add to: [1] left  [2] right  Esc: cancel".to_string());
+        app.set_notification(
+          "Add to: [1] left  [2] right  Esc: cancel".to_string(),
+        );
       } else {
         app.fulltext_new_tab = !app.reader_tabs.is_empty();
         app.fulltext_for_secondary = false;
@@ -637,23 +855,28 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
     }
     // Ldr+[ / Ldr+] — cycle tabs in focused pane
     KeyCode::Char('[') => {
-      if app.focused_pane == PaneId::Notes && app.notes_active {
-        notes_prev_tab(app);
+      if let Some(side) =
+        focused_note_side(app).filter(|side| notes_side_active(app, *side))
+      {
+        notes_prev_tab(app, side);
       } else if app.reader_active {
         app.reader_prev_tab();
       }
     }
     KeyCode::Char(']') => {
-      if app.focused_pane == PaneId::Notes && app.notes_active {
-        notes_next_tab(app);
+      if let Some(side) =
+        focused_note_side(app).filter(|side| notes_side_active(app, *side))
+      {
+        notes_next_tab(app, side);
       } else if app.reader_active {
         app.reader_next_tab();
       }
     }
     // Ldr+w — close current tab (collapse pane when last tab)
     KeyCode::Char('w') => match app.focused_pane {
-      PaneId::Notes if app.notes_active => {
-        notes_close_active_tab(app);
+      PaneId::Notes | PaneId::SecondaryNotes if any_notes_active(app) => {
+        let side = focused_note_side(app).unwrap_or(FocusedReader::Primary);
+        notes_close_active_tab(app, side);
       }
       PaneId::SecondaryReader => {
         let pane_empty = app.reader_secondary_close_active_tab();
@@ -661,6 +884,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
           app.reader_dual_active = false;
           app.reader_bottom_open = false;
           app.reader_bottom_focused = false;
+          app.secondary_notes_active = false;
           app.focused_reader = FocusedReader::Primary;
           app.focused_pane = PaneId::Reader;
         }
@@ -674,6 +898,7 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
             app.reader_bottom_focused = false;
             app.reader_secondary_tabs.clear();
             app.reader_secondary_active_tab = 0;
+            app.secondary_notes_active = false;
           } else if app.reader_split_active {
             app.reader_split_active = false;
           }
@@ -686,45 +911,93 @@ fn handle_leader(key: KeyEvent, app: &mut App) {
   }
 }
 
-fn notes_prev_tab(app: &mut App) {
-  if app.notes_tabs.is_empty() {
+fn notes_prev_tab(app: &mut App, side: FocusedReader) {
+  let active = match side {
+    FocusedReader::Primary => app.notes_active_tab,
+    FocusedReader::Secondary => app.secondary_notes_active_tab,
+  };
+  if notes_tabs_len(app, side) == 0 {
     return;
   }
-  let new_idx = app.notes_active_tab.saturating_sub(1);
-  notes_switch_tab(app, new_idx);
+  notes_switch_tab(app, side, active.saturating_sub(1));
 }
 
-fn notes_next_tab(app: &mut App) {
-  if app.notes_tabs.is_empty() {
+fn notes_next_tab(app: &mut App, side: FocusedReader) {
+  let len = notes_tabs_len(app, side);
+  if len == 0 {
     return;
   }
-  let new_idx = (app.notes_active_tab + 1).min(app.notes_tabs.len() - 1);
-  notes_switch_tab(app, new_idx);
+  let active = match side {
+    FocusedReader::Primary => app.notes_active_tab,
+    FocusedReader::Secondary => app.secondary_notes_active_tab,
+  };
+  notes_switch_tab(app, side, (active + 1).min(len - 1));
 }
 
-fn notes_switch_tab(app: &mut App, idx: usize) {
-  app.notes_active_tab = idx;
-  if let Some(note_id) = app.notes_tabs.get(idx).map(|t| t.note_id.clone()) {
+fn notes_tabs_len(app: &App, side: FocusedReader) -> usize {
+  match side {
+    FocusedReader::Primary => app.notes_tabs.len(),
+    FocusedReader::Secondary => app.secondary_notes_tabs.len(),
+  }
+}
+
+fn notes_switch_tab(app: &mut App, side: FocusedReader, idx: usize) {
+  let note_id = match side {
+    FocusedReader::Primary => {
+      app.notes_active_tab = idx;
+      app.notes_tabs.get(idx).map(|t| t.note_id.clone())
+    }
+    FocusedReader::Secondary => {
+      app.secondary_notes_active_tab = idx;
+      app.secondary_notes_tabs.get(idx).map(|t| t.note_id.clone())
+    }
+  };
+  if let Some(note_id) = note_id {
     if let Some(na) = app.notes_app.as_mut() {
       na.focus_note(&note_id);
     }
   }
 }
 
-fn notes_close_active_tab(app: &mut App) {
-  if app.notes_tabs.is_empty() {
+fn notes_close_active_tab(app: &mut App, side: FocusedReader) {
+  let became_empty = match side {
+    FocusedReader::Primary => {
+      if app.notes_tabs.is_empty() {
+        return;
+      }
+      app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
+      app.notes_tabs.remove(app.notes_active_tab);
+      app.notes_tabs.is_empty()
+    }
+    FocusedReader::Secondary => {
+      if app.secondary_notes_tabs.is_empty() {
+        return;
+      }
+      app.secondary_notes_active_tab =
+        app.secondary_notes_active_tab.min(app.secondary_notes_tabs.len() - 1);
+      app.secondary_notes_tabs.remove(app.secondary_notes_active_tab);
+      app.secondary_notes_tabs.is_empty()
+    }
+  };
+
+  if became_empty {
+    set_notes_side_active(app, side, false);
+    app.focused_pane = focus_fallback_after_notes(app, side);
     return;
   }
-  // Clamp before remove — stale ui.json can leave active_tab >= len.
-  app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
-  app.notes_tabs.remove(app.notes_active_tab);
-  if app.notes_tabs.is_empty() {
-    app.notes_active = false;
-    app.focused_pane = if app.reader_active { PaneId::Reader } else { PaneId::Feed };
-    return;
-  }
-  app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
-  notes_switch_tab(app, app.notes_active_tab);
+
+  let idx = match side {
+    FocusedReader::Primary => {
+      app.notes_active_tab = app.notes_active_tab.min(app.notes_tabs.len() - 1);
+      app.notes_active_tab
+    }
+    FocusedReader::Secondary => {
+      app.secondary_notes_active_tab =
+        app.secondary_notes_active_tab.min(app.secondary_notes_tabs.len() - 1);
+      app.secondary_notes_active_tab
+    }
+  };
+  notes_switch_tab(app, side, idx);
 }
 
 /// Spawns a fulltext fetch for the selected item, using flags already set on app.
@@ -778,30 +1051,54 @@ fn handle_chat_pane(key: KeyEvent, app: &mut App) -> bool {
 }
 
 fn handle_notes_pane(key: KeyEvent, app: &mut App) -> bool {
-  if !(app.notes_active && app.focused_pane == PaneId::Notes) {
+  let Some(side) =
+    focused_note_side(app).filter(|side| notes_side_active(app, *side))
+  else {
     return false;
-  }
+  };
+  sync_notes_app_to_side(app, side);
   log::debug!("routing to notes pane");
   if let Some(notes_app) = app.notes_app.as_mut() {
     if notes::handle_key(key, notes_app) {
       if let Err(e) = notes_app.persist_state() {
         log::error!("notes: failed to persist state: {e}");
       }
-      app.notes_active = false;
-      app.focused_pane =
-        if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+      set_notes_side_active(app, side, false);
+      app.focused_pane = focus_fallback_after_notes(app, side);
     }
   }
   // Pick up a freshly created note and add its tab.
-  if let Some(note_id) = app.notes_app.as_mut().and_then(|na| na.last_created_note_id.take()) {
-    let title = app.notes_app.as_ref()
+  if let Some(note_id) =
+    app.notes_app.as_mut().and_then(|na| na.last_created_note_id.take())
+  {
+    let title = app
+      .notes_app
+      .as_ref()
       .and_then(|na| na.get_note_title(&note_id))
       .unwrap_or_default();
-    if !app.notes_tabs.iter().any(|t| t.note_id == note_id) {
-      app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
-    }
-    if let Some(idx) = app.notes_tabs.iter().position(|t| t.note_id == note_id) {
-      app.notes_active_tab = idx;
+    match side {
+      FocusedReader::Primary => {
+        if !app.notes_tabs.iter().any(|t| t.note_id == note_id) {
+          app.notes_tabs.push(NotesTab { note_id: note_id.clone(), title });
+        }
+        if let Some(idx) =
+          app.notes_tabs.iter().position(|t| t.note_id == note_id)
+        {
+          app.notes_active_tab = idx;
+        }
+      }
+      FocusedReader::Secondary => {
+        if !app.secondary_notes_tabs.iter().any(|t| t.note_id == note_id) {
+          app
+            .secondary_notes_tabs
+            .push(NotesTab { note_id: note_id.clone(), title });
+        }
+        if let Some(idx) =
+          app.secondary_notes_tabs.iter().position(|t| t.note_id == note_id)
+        {
+          app.secondary_notes_active_tab = idx;
+        }
+      }
     }
   }
   true
@@ -817,14 +1114,14 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
       }
       return true;
     }
-    // Esc in Normal mode: force-close everything and return to feed.
+    // Esc in Normal mode: step back one reader layer.
     if key.code == KeyCode::Esc {
       let in_normal = app
         .reader_secondary_editor_mut()
         .map(|e| e.is_normal_mode())
         .unwrap_or(true);
       if in_normal {
-        close_all_readers(app);
+        reader_back(app, FocusedReader::Secondary);
         return true;
       }
     }
@@ -837,6 +1134,7 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
           app.reader_dual_active = false;
           app.reader_bottom_open = false;
           app.reader_bottom_focused = false;
+          app.secondary_notes_active = false;
           app.focused_reader = FocusedReader::Primary;
           app.focused_pane = PaneId::Reader;
         }
@@ -859,14 +1157,14 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
     return true;
   }
 
-  // Esc in Normal mode: force-close everything and return to feed.
+  // Esc in Normal mode: step back one reader layer, exiting only from a lone reader.
   if key.code == KeyCode::Esc {
-    let in_normal = app
-      .reader_editor_mut()
-      .map(|e| e.is_normal_mode())
-      .unwrap_or(true);
+    let in_normal =
+      app.reader_editor_mut().map(|e| e.is_normal_mode()).unwrap_or(true);
     if in_normal {
-      close_all_readers(app);
+      if !reader_back(app, FocusedReader::Primary) {
+        close_all_readers(app);
+      }
       return true;
     }
   }
@@ -879,14 +1177,18 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
       if pane_empty {
         if app.reader_dual_active {
           // Primary ran out of tabs: promote secondary tabs to primary.
-          app.reader_tabs =
-            std::mem::take(&mut app.reader_secondary_tabs);
+          app.reader_tabs = std::mem::take(&mut app.reader_secondary_tabs);
           app.reader_active_tab = app.reader_secondary_active_tab;
           app.reader_secondary_active_tab = 0;
           app.reader_active = !app.reader_tabs.is_empty();
           app.reader_dual_active = false;
           app.reader_bottom_open = false;
           app.reader_bottom_focused = false;
+          app.notes_active = app.secondary_notes_active;
+          app.notes_tabs = std::mem::take(&mut app.secondary_notes_tabs);
+          app.notes_active_tab = app.secondary_notes_active_tab;
+          app.secondary_notes_active = false;
+          app.secondary_notes_active_tab = 0;
           app.focused_reader = FocusedReader::Primary;
           app.focused_pane =
             if app.reader_active { PaneId::Reader } else { PaneId::Feed };
@@ -902,6 +1204,70 @@ fn handle_reader_pane(key: KeyEvent, app: &mut App) -> bool {
   true
 }
 
+fn reader_back(app: &mut App, side: FocusedReader) -> bool {
+  if app.reader_bottom_open {
+    app.reader_bottom_open = false;
+    app.reader_bottom_focused = false;
+    app.reader_bottom_details = false;
+    app.focused_pane = match side {
+      FocusedReader::Primary => PaneId::Reader,
+      FocusedReader::Secondary if app.reader_dual_active => {
+        PaneId::SecondaryReader
+      }
+      FocusedReader::Secondary => PaneId::Reader,
+    };
+    app.focused_reader = side;
+    return true;
+  }
+
+  if app.narrow_feed_details_open {
+    app.narrow_feed_details_open = false;
+    return true;
+  }
+
+  if app.reader_split_active {
+    app.reader_split_active = false;
+    app.focused_pane = PaneId::Reader;
+    app.focused_reader = FocusedReader::Primary;
+    return true;
+  }
+
+  if app.reader_dual_active {
+    match side {
+      FocusedReader::Secondary => {
+        app.reader_dual_active = false;
+        app.reader_secondary_tabs.clear();
+        app.reader_secondary_active_tab = 0;
+        app.secondary_notes_active = false;
+        app.reader_bottom_open = false;
+        app.reader_bottom_focused = false;
+        app.focused_reader = FocusedReader::Primary;
+        app.focused_pane = PaneId::Reader;
+      }
+      FocusedReader::Primary => {
+        app.reader_tabs = std::mem::take(&mut app.reader_secondary_tabs);
+        app.reader_active_tab = app.reader_secondary_active_tab;
+        app.reader_secondary_active_tab = 0;
+        app.reader_active = !app.reader_tabs.is_empty();
+        app.reader_dual_active = false;
+        app.reader_bottom_open = false;
+        app.reader_bottom_focused = false;
+        app.notes_active = app.secondary_notes_active;
+        app.notes_tabs = std::mem::take(&mut app.secondary_notes_tabs);
+        app.notes_active_tab = app.secondary_notes_active_tab;
+        app.secondary_notes_active = false;
+        app.secondary_notes_active_tab = 0;
+        app.focused_reader = FocusedReader::Primary;
+        app.focused_pane =
+          if app.reader_active { PaneId::Reader } else { PaneId::Feed };
+      }
+    }
+    return true;
+  }
+
+  false
+}
+
 /// Close all reader state and return focus to the feed.
 fn close_all_readers(app: &mut App) {
   app.reader_active = false;
@@ -913,6 +1279,8 @@ fn close_all_readers(app: &mut App) {
   app.reader_active_tab = 0;
   app.reader_secondary_tabs.clear();
   app.reader_secondary_active_tab = 0;
+  app.notes_active = false;
+  app.secondary_notes_active = false;
   app.focused_reader = FocusedReader::Primary;
   app.focused_pane = PaneId::Feed;
 }
@@ -1352,7 +1720,8 @@ fn theme_picker_row_count(app: &App) -> usize {
 fn theme_picker_active_row(app: &App) -> usize {
   let presets = ThemeId::all();
   if let Some(id) = &app.active_custom_theme_id {
-    if let Some(idx) = app.config.custom_themes.iter().position(|t| &t.id == id) {
+    if let Some(idx) = app.config.custom_themes.iter().position(|t| &t.id == id)
+    {
       return presets.len() + idx;
     }
   }
@@ -1369,7 +1738,8 @@ fn activate_theme_picker_row(app: &mut App, commit: bool) {
   let presets = ThemeId::all();
   let preset_count = presets.len();
   let custom_count = app.config.custom_themes.len();
-  let row = app.theme_picker_cursor.min(theme_picker_row_count(app).saturating_sub(1));
+  let row =
+    app.theme_picker_cursor.min(theme_picker_row_count(app).saturating_sub(1));
 
   if row < preset_count {
     app.active_theme = presets[row];
@@ -1396,7 +1766,8 @@ fn activate_theme_picker_row(app: &mut App, commit: bool) {
 }
 
 fn open_new_custom_theme_editor(app: &mut App) {
-  let base = app.active_custom_theme().map(|t| t.base).unwrap_or(app.active_theme);
+  let base =
+    app.active_custom_theme().map(|t| t.base).unwrap_or(app.active_theme);
   let name = next_custom_theme_name(app);
   let theme = CustomThemeConfig::from_theme(
     next_custom_theme_id(app),
@@ -1436,15 +1807,20 @@ fn next_custom_theme_name(app: &App) -> String {
 }
 
 fn handle_custom_theme_editor(key: KeyEvent, app: &mut App) {
-  let Some(mode) = app.custom_theme_editor.as_ref().map(|editor| editor.mode) else {
+  let Some(mode) = app.custom_theme_editor.as_ref().map(|editor| editor.mode)
+  else {
     return;
   };
 
   match mode {
     CustomThemeEditorMode::Name => handle_custom_theme_name_editor(key, app),
     CustomThemeEditorMode::Hex => handle_custom_theme_hex_editor(key, app),
-    CustomThemeEditorMode::DeleteConfirm => handle_custom_theme_delete_confirm(key, app),
-    CustomThemeEditorMode::Palette => handle_custom_theme_palette_editor(key, app),
+    CustomThemeEditorMode::DeleteConfirm => {
+      handle_custom_theme_delete_confirm(key, app)
+    }
+    CustomThemeEditorMode::Palette => {
+      handle_custom_theme_palette_editor(key, app)
+    }
   }
 }
 
@@ -1492,12 +1868,16 @@ fn handle_custom_theme_hex_editor(key: KeyEvent, app: &mut App) {
       };
       let value = editor.edit_buf.trim();
       if config::parse_hex_color(value).is_some() {
-        let key = CUSTOM_THEME_ROLES[editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)].key;
+        let key = CUSTOM_THEME_ROLES
+          [editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)]
+        .key;
         editor.theme.colors.set_role(key, normalize_hex(value));
         editor.mode = CustomThemeEditorMode::Palette;
         editor.edit_buf.clear();
       } else {
-        app.set_notification("Use a 6-digit hex color, e.g. #67D7F5.".to_string());
+        app.set_notification(
+          "Use a 6-digit hex color, e.g. #67D7F5.".to_string(),
+        );
       }
     }
     KeyCode::Esc => {
@@ -1529,7 +1909,8 @@ fn handle_custom_theme_delete_confirm(key: KeyEvent, app: &mut App) {
         return;
       };
       let delete_id = editor.theme.id;
-      let delete_was_active = app.active_custom_theme_id.as_deref() == Some(&delete_id);
+      let delete_was_active =
+        app.active_custom_theme_id.as_deref() == Some(&delete_id);
       app.config.custom_themes.retain(|theme| theme.id != delete_id);
       if delete_was_active {
         app.active_custom_theme_id = None;
@@ -1539,7 +1920,8 @@ fn handle_custom_theme_delete_confirm(key: KeyEvent, app: &mut App) {
       }
       app.config.save();
       app.settings_save_time = Some(std::time::Instant::now());
-      app.theme_picker_cursor = app.theme_picker_cursor.min(theme_picker_row_count(app) - 1);
+      app.theme_picker_cursor =
+        app.theme_picker_cursor.min(theme_picker_row_count(app) - 1);
       clamp_theme_picker_scroll(app);
     }
     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -1567,8 +1949,11 @@ fn handle_custom_theme_palette_editor(key: KeyEvent, app: &mut App) {
     }
     KeyCode::Char('x') => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        let key = CUSTOM_THEME_ROLES[editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)].key;
-        editor.edit_buf = editor.theme.colors.get_role(key).unwrap_or("#000000").to_string();
+        let key = CUSTOM_THEME_ROLES
+          [editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)]
+        .key;
+        editor.edit_buf =
+          editor.theme.colors.get_role(key).unwrap_or("#000000").to_string();
         editor.mode = CustomThemeEditorMode::Hex;
       }
     }
@@ -1581,12 +1966,14 @@ fn handle_custom_theme_palette_editor(key: KeyEvent, app: &mut App) {
     }
     KeyCode::Char('r') => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        editor.theme.colors = config::CustomThemeColors::from_theme(editor.theme.base.theme());
+        editor.theme.colors =
+          config::CustomThemeColors::from_theme(editor.theme.base.theme());
       }
     }
     KeyCode::Char('j') | KeyCode::Down => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        editor.role_cursor = (editor.role_cursor + 1).min(CUSTOM_THEME_ROLES.len() - 1);
+        editor.role_cursor =
+          (editor.role_cursor + 1).min(CUSTOM_THEME_ROLES.len() - 1);
       }
     }
     KeyCode::Char('k') | KeyCode::Up => {
@@ -1601,7 +1988,8 @@ fn handle_custom_theme_palette_editor(key: KeyEvent, app: &mut App) {
     }
     KeyCode::Char('l') | KeyCode::Right => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        editor.hue_cursor = (editor.hue_cursor + 1).min(THEME_PALETTE[0].len() - 1);
+        editor.hue_cursor =
+          (editor.hue_cursor + 1).min(THEME_PALETTE[0].len() - 1);
       }
     }
     KeyCode::Char('[') | KeyCode::Char('-') => {
@@ -1611,13 +1999,19 @@ fn handle_custom_theme_palette_editor(key: KeyEvent, app: &mut App) {
     }
     KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=') => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        editor.shade_cursor = (editor.shade_cursor + 1).min(THEME_PALETTE.len() - 1);
+        editor.shade_cursor =
+          (editor.shade_cursor + 1).min(THEME_PALETTE.len() - 1);
       }
     }
     KeyCode::Char(' ') => {
       if let Some(editor) = app.custom_theme_editor.as_mut() {
-        let role = CUSTOM_THEME_ROLES[editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)].key;
-        editor.theme.colors.set_role(role, selected_palette_hex(editor).to_string());
+        let role = CUSTOM_THEME_ROLES
+          [editor.role_cursor.min(CUSTOM_THEME_ROLES.len() - 1)]
+        .key;
+        editor
+          .theme
+          .colors
+          .set_role(role, selected_palette_hex(editor).to_string());
       }
     }
     _ => {}
@@ -1629,7 +2023,9 @@ fn save_custom_theme_editor(app: &mut App) {
     return;
   };
   let theme = editor.theme;
-  if let Some(existing) = app.config.custom_themes.iter_mut().find(|t| t.id == theme.id) {
+  if let Some(existing) =
+    app.config.custom_themes.iter_mut().find(|t| t.id == theme.id)
+  {
     *existing = theme.clone();
   } else {
     app.config.custom_themes.push(theme.clone());
@@ -2175,7 +2571,8 @@ fn handle_library_tab(key: KeyEvent, app: &mut App) -> bool {
         return true;
       }
       KeyCode::Char('k') | KeyCode::Up => {
-        app.library_selected_index = app.library_selected_index.saturating_sub(1);
+        app.library_selected_index =
+          app.library_selected_index.saturating_sub(1);
         app.library_recompute_selection();
         return true;
       }
@@ -2305,7 +2702,8 @@ fn handle_history_tab(key: KeyEvent, app: &mut App) -> bool {
     }
     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
       let visible = app.filtered_history();
-      let Some(target) = visible.get(app.history_selected_index).cloned() else {
+      let Some(target) = visible.get(app.history_selected_index).cloned()
+      else {
         return true;
       };
       let key_to_delete = (target.kind, target.key.clone());
@@ -2319,7 +2717,9 @@ fn handle_history_tab(key: KeyEvent, app: &mut App) -> bool {
     }
     KeyCode::Char('o') => {
       let visible = app.filtered_history();
-      let Some(entry) = visible.get(app.history_selected_index).map(|e| (*e).clone()) else {
+      let Some(entry) =
+        visible.get(app.history_selected_index).map(|e| (*e).clone())
+      else {
         return true;
       };
       if entry.kind == HistoryKind::Paper {
@@ -2381,9 +2781,7 @@ fn reconstruct_feed_item(
   entry: &crate::history::HistoryEntry,
   meta: &crate::history::HistoryPaperMeta,
 ) -> crate::models::FeedItem {
-  use crate::models::{
-    ContentType, FeedItem, SignalLevel, WorkflowState,
-  };
+  use crate::models::{ContentType, FeedItem, SignalLevel, WorkflowState};
   FeedItem {
     id: entry.key.clone(),
     title: entry.title.clone(),
@@ -2410,9 +2808,7 @@ fn reconstruct_feed_item(
 
 // ── Discovery palette helpers ─────────────────────────────────────────────────
 
-fn discovery_palette_filtered(
-  query: &str,
-) -> Vec<chat::ChatSlashCommandSpec> {
+fn discovery_palette_filtered(query: &str) -> Vec<chat::ChatSlashCommandSpec> {
   let all = crate::commands::registry::discovery_slash_specs();
   let q = query.to_lowercase();
   all
@@ -2425,7 +2821,10 @@ fn discovery_palette_count(query: &str) -> usize {
   discovery_palette_filtered(query).len()
 }
 
-fn discovery_palette_completion(query: &str, selected: usize) -> Option<String> {
+fn discovery_palette_completion(
+  query: &str,
+  selected: usize,
+) -> Option<String> {
   discovery_palette_filtered(query)
     .into_iter()
     .nth(selected)

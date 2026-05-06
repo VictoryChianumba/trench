@@ -170,9 +170,10 @@ pub enum PaneId {
   Details = 3,
   Chat = 4,
   SecondaryReader = 5,
+  SecondaryNotes = 6,
 }
 
-const PANE_COUNT: usize = 6;
+const PANE_COUNT: usize = 7;
 
 /// Which reader pane has focus in dual-reader (State 3) mode.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -408,6 +409,9 @@ pub struct App {
   pub notes_active: bool,
   pub notes_tabs: Vec<NotesTab>,
   pub notes_active_tab: usize,
+  pub secondary_notes_active: bool,
+  pub secondary_notes_tabs: Vec<NotesTab>,
+  pub secondary_notes_active_tab: usize,
 
   // Embedded chat pane
   pub chat_ui: Option<chat::ChatUi>,
@@ -578,6 +582,9 @@ impl App {
       notes_active: false,
       notes_tabs: Vec::new(),
       notes_active_tab: 0,
+      secondary_notes_active: false,
+      secondary_notes_tabs: Vec::new(),
+      secondary_notes_active_tab: 0,
       chat_ui: None,
       chat_active: false,
       chat_fullscreen: false,
@@ -630,6 +637,7 @@ impl App {
         PaneInfo::new(PaneId::Details),
         PaneInfo::new(PaneId::Chat),
         PaneInfo::new(PaneId::SecondaryReader),
+        PaneInfo::new(PaneId::SecondaryNotes),
       ],
     }
   }
@@ -686,6 +694,7 @@ impl App {
     details: Option<Rect>,
     chat: Option<Rect>,
     secondary_reader: Option<Rect>,
+    secondary_notes: Option<Rect>,
   ) {
     let updates: [(PaneId, Option<Rect>); PANE_COUNT] = [
       (PaneId::Feed, feed),
@@ -694,6 +703,7 @@ impl App {
       (PaneId::Details, details),
       (PaneId::Chat, chat),
       (PaneId::SecondaryReader, secondary_reader),
+      (PaneId::SecondaryNotes, secondary_notes),
     ];
     for (id, opt) in updates {
       let info = self.pane_mut(id);

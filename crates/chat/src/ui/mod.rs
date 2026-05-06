@@ -4,22 +4,22 @@ use std::sync::mpsc;
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
-  Frame,
   layout::{Alignment, Constraint, Direction, Layout, Rect},
   style::{Modifier, Style},
   text::{Line, Span, Text},
   widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+  Frame,
 };
 use ui_theme::Theme;
 
 use crate::{
-  ChatIndex, ChatMessage, ChatSession, ChatSessionMeta, Role,
   provider::ProviderResponse,
-  provider_registry::{ProviderRegistry, parse_provider_prefix},
+  provider_registry::{parse_provider_prefix, ProviderRegistry},
   storage::{
     create_session, delete_session, load_index, load_session, save_index,
     save_session,
   },
+  ChatIndex, ChatMessage, ChatSession, ChatSessionMeta, Role,
 };
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -62,6 +62,7 @@ pub struct ChatUi {
   pub input: String,
   pub input_cursor: usize,
   pub scroll_offset: usize,
+  pub follow_tail: bool,
   pub provider_registry: ProviderRegistry,
   pub default_provider: String,
   pub new_session_input: String,
@@ -70,7 +71,7 @@ pub struct ChatUi {
     Option<mpsc::Receiver<Result<ProviderResponse, String>>>,
   pub is_loading: bool,
   pub frame_count: u64,
-  /// Words remaining to reveal during streaming simulation.
+  /// Text chunks remaining to reveal during streaming simulation.
   /// `VecDeque` so the per-tick word reveal pops from the front in O(1)
   /// instead of shifting the entire vector on every tick (the prior
   /// `Vec::remove(0)` was O(N) at ~62Hz × N words remaining).
@@ -135,6 +136,7 @@ impl ChatUi {
       input: String::new(),
       input_cursor: 0,
       scroll_offset: 0,
+      follow_tail: true,
       provider_registry: registry,
       default_provider,
       new_session_input: String::new(),
@@ -152,6 +154,25 @@ impl ChatUi {
       slash_scroll: 0,
       slash_commands,
     }
+  }
+
+  pub fn workspace_summary(&self) -> (String, String, String) {
+    let provider_name = self
+      .active_session
+      .as_ref()
+      .and_then(|s| s.provider.as_deref().map(|p| p.to_string()))
+      .unwrap_or_else(|| self.default_provider.clone());
+    let model_name = self
+      .provider_registry
+      .get(&provider_name)
+      .map(|p| p.model().to_string())
+      .unwrap_or_else(|| "unknown".to_string());
+    let session_title = self
+      .active_session
+      .as_ref()
+      .map(|s| s.title.clone())
+      .unwrap_or_else(|| "chat".to_string());
+    (session_title, provider_name, model_name)
   }
 }
 
@@ -177,11 +198,11 @@ impl ChatUi {
       } else if let Some(word) = self.streaming_words.pop_front() {
         if let Some(session) = self.active_session.as_mut() {
           if let Some(last_msg) = session.messages.last_mut() {
-            if !last_msg.content.is_empty() {
-              last_msg.content.push(' ');
-            }
-            last_msg.content.push_str(&word);
+            append_stream_chunk(&mut last_msg.content, &word);
           }
+        }
+        if self.follow_tail {
+          self.scroll_offset = usize::MAX;
         }
       }
       return;
@@ -237,9 +258,9 @@ impl ChatUi {
           session.total_output_tokens += response.output_tokens;
         }
 
-        // Split into words for streaming reveal.
+        // Split into whitespace-preserving chunks for streaming reveal.
         let words: std::collections::VecDeque<String> =
-          response.content.split_whitespace().map(|w| w.to_string()).collect();
+          split_stream_chunks(&response.content);
 
         // Push a placeholder assistant message (content will fill as we stream).
         if let Some(session) = self.active_session.as_mut() {
@@ -260,6 +281,7 @@ impl ChatUi {
           self.is_streaming = true;
         }
 
+        self.follow_tail = true;
         self.scroll_offset = usize::MAX;
       }
     }
@@ -270,6 +292,16 @@ impl ChatUi {
 
 impl ChatUi {
   pub fn draw(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
+    self.draw_with_context(frame, area, t, None);
+  }
+
+  pub fn draw_with_context(
+    &mut self,
+    frame: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    context: Option<&str>,
+  ) {
     match self.state {
       // Session list and new-session overlay both draw on top of the
       // chat background — always render the chat background first.
@@ -282,7 +314,7 @@ impl ChatUi {
         self.draw_session_list(frame, area, t);
         self.draw_new_session_overlay(frame, area, t);
       }
-      ChatUiState::Chat => self.draw_chat(frame, area, t),
+      ChatUiState::Chat => self.draw_chat(frame, area, t, context),
     }
   }
 
@@ -410,6 +442,7 @@ impl ChatUi {
             let id = meta.id.clone();
             if let Some(session) = load_session(&id) {
               self.active_session = Some(session);
+              self.follow_tail = true;
               self.scroll_offset = usize::MAX;
               self.input_mode = ChatInputMode::Insert;
               self.state = ChatUiState::Chat;
@@ -510,6 +543,7 @@ impl ChatUi {
         self.active_session = Some(session);
         self.input.clear();
         self.input_cursor = 0;
+        self.follow_tail = true;
         self.scroll_offset = 0;
         self.input_mode = ChatInputMode::Insert;
         self.state = ChatUiState::Chat;
@@ -534,18 +568,14 @@ impl ChatUi {
 // ── Chat view ─────────────────────────────────────────────────────────────────
 
 impl ChatUi {
-  fn draw_chat(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
-    let provider_name = self
-      .active_session
-      .as_ref()
-      .and_then(|s| s.provider.as_deref().map(|p| p.to_string()))
-      .unwrap_or_else(|| self.default_provider.clone());
-
-    let model_name = self
-      .provider_registry
-      .get(&provider_name)
-      .map(|p| p.model().to_string())
-      .unwrap_or_else(|| "unknown".to_string());
+  fn draw_chat(
+    &mut self,
+    frame: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    context: Option<&str>,
+  ) {
+    let (session_title, provider_name, model_name) = self.workspace_summary();
 
     // Full background fill.
     frame.render_widget(
@@ -553,23 +583,26 @@ impl ChatUi {
       area,
     );
 
-    // Layout: separator(1) | header(1) | messages(fill) | input(1) | status(1)
+    // Layout: separator(1) | header(1) | context(0/1) | messages(fill) | input(3) | status(1)
+    let context_h = if context.is_some() { 1 } else { 0 };
     let chunks = Layout::default()
       .direction(Direction::Vertical)
       .constraints([
-        Constraint::Length(1), // top separator
-        Constraint::Length(1), // header
-        Constraint::Min(0),    // message viewport
-        Constraint::Length(1), // input bar
-        Constraint::Length(1), // status bar
+        Constraint::Length(1),         // top separator
+        Constraint::Length(1),         // header
+        Constraint::Length(context_h), // paper context strip
+        Constraint::Min(0),            // message viewport
+        Constraint::Length(3),         // input block
+        Constraint::Length(1),         // status bar
       ])
       .split(area);
 
     let sep_area = chunks[0];
     let header_area = chunks[1];
-    let messages_area = chunks[2];
-    let input_area = chunks[3];
-    let status_area = chunks[4];
+    let context_area = chunks[2];
+    let messages_area = chunks[3];
+    let input_area = chunks[4];
+    let status_area = chunks[5];
 
     // ── Top separator ──────────────────────────────────────────────
     frame.render_widget(
@@ -579,14 +612,15 @@ impl ChatUi {
     );
 
     // ── Header: "── session title ── model · provider ──"
-    let session_title = self
-      .active_session
-      .as_ref()
-      .map(|s| s.title.clone())
-      .unwrap_or_else(|| "chat".to_string());
-
     let model_provider = format!("{model_name} · {provider_name}");
-    let used = 4 + session_title.len() + 4 + model_provider.len() + 2;
+    // Char count, not byte count: paper titles often contain multi-byte
+    // characters (em-dash, accents, smart quotes) and `String::len()` would
+    // under-count display width, producing visible header-fill misalignment.
+    let used = 4
+      + session_title.chars().count()
+      + 4
+      + model_provider.chars().count()
+      + 2;
     let fill = (area.width as usize).saturating_sub(used);
 
     let header_line = Line::from(vec![
@@ -604,55 +638,81 @@ impl ChatUi {
       header_area,
     );
 
+    if let Some(context) = context {
+      let max = context_area.width as usize;
+      let text = truncate_for_width(context, max.saturating_sub(2));
+      let line = Line::from(vec![
+        Span::styled(
+          "  Discussing: ",
+          Style::default().fg(t.text_dim).bg(t.bg_chat),
+        ),
+        Span::styled(text, Style::default().fg(t.accent).bg(t.bg_chat)),
+      ]);
+      frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(t.bg_chat)),
+        context_area,
+      );
+    }
+
     // ── Messages ──────────────────────────────────────────────────
-    let width = messages_area.width as usize;
+    let messages_content_area = messages_area;
+    let width = messages_content_area.width as usize;
     let msg_lines = self.build_message_lines(width, t);
     let total_lines = msg_lines.len();
-    let viewport_height = messages_area.height as usize;
+    let viewport_height = messages_content_area.height as usize;
     self.viewport_height = viewport_height;
 
     let max_scroll = total_lines.saturating_sub(viewport_height);
-    if self.scroll_offset > max_scroll {
+    if self.follow_tail || self.scroll_offset > max_scroll {
       self.scroll_offset = max_scroll;
+    }
+    if self.scroll_offset >= max_scroll {
+      self.follow_tail = true;
     }
 
     frame.render_widget(
       Paragraph::new(Text::from(msg_lines))
         .style(Style::default().bg(t.bg_chat))
         .scroll((self.scroll_offset as u16, 0)),
-      messages_area,
+      messages_content_area,
     );
 
-    self.draw_slash_palette(frame, messages_area, t);
+    self.draw_slash_palette(frame, messages_content_area, t);
 
     // Scroll indicator — top-right corner when not at bottom.
-    if self.scroll_offset < max_scroll && messages_area.height > 0 {
+    if self.scroll_offset < max_scroll && messages_content_area.height > 0 {
       let label = " ↑ more ";
       let lw = label.len() as u16;
-      let x = messages_area.x + messages_area.width.saturating_sub(lw);
+      let x = messages_content_area.x
+        + messages_content_area.width.saturating_sub(lw);
       frame.render_widget(
         Paragraph::new(label)
           .style(Style::default().fg(t.text_dim).bg(t.bg_chat)),
-        Rect { x, y: messages_area.y, width: lw, height: 1 },
+        Rect { x, y: messages_content_area.y, width: lw, height: 1 },
       );
     }
 
     // ── Input bar ─────────────────────────────────────────────────
     let input_bg = t.bg_input;
     // Stripe color signals mode: accent = insert (ready to type), dim = normal/loading.
-    let stripe_color = if self.is_loading || self.input_mode == ChatInputMode::Normal {
-      t.text_dim
-    } else {
-      t.accent
-    };
-    let stripe = Span::styled("│ ", Style::default().fg(stripe_color).bg(input_bg));
+    let stripe_color =
+      if self.is_loading || self.input_mode == ChatInputMode::Normal {
+        t.text_dim
+      } else {
+        t.accent
+      };
+    let stripe =
+      Span::styled("│ ", Style::default().fg(stripe_color).bg(input_bg));
 
     let input_line = if self.is_loading {
       let dots_idx = ((self.frame_count / 8) as usize) % 4;
       let dots = ["·", "··", "···", "··"][dots_idx];
       Line::from(vec![
         stripe,
-        Span::styled(dots.to_string(), Style::default().fg(t.text_dim).bg(input_bg)),
+        Span::styled(
+          dots.to_string(),
+          Style::default().fg(t.text_dim).bg(input_bg),
+        ),
       ])
     } else if self.input_mode == ChatInputMode::Normal {
       let text = if self.input.is_empty() {
@@ -681,14 +741,27 @@ impl ChatUi {
         ),
       ])
     };
+    let empty_input_line = Line::from(Span::styled(
+      " ".repeat(input_area.width as usize),
+      Style::default().bg(input_bg),
+    ));
     frame.render_widget(
-      Paragraph::new(input_line).style(Style::default().bg(input_bg)),
+      Paragraph::new(vec![
+        empty_input_line.clone(),
+        input_line,
+        empty_input_line,
+      ])
+      .style(Style::default().bg(input_bg)),
       input_area,
     );
 
     // ── Status bar ────────────────────────────────────────────────
-    let status_line =
-      self.build_status_line(&provider_name, &model_name, area.width as usize, t);
+    let status_line = self.build_status_line(
+      &provider_name,
+      &model_name,
+      area.width as usize,
+      t,
+    );
     frame.render_widget(
       Paragraph::new(status_line).style(Style::default().bg(t.bg_chat)),
       status_area,
@@ -851,6 +924,7 @@ impl ChatUi {
       }
 
       KeyCode::Char('k') | KeyCode::Up => {
+        self.follow_tail = false;
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
         ChatAction::None
       }
@@ -862,6 +936,7 @@ impl ChatUi {
       }
 
       KeyCode::PageUp => {
+        self.follow_tail = false;
         let step = (self.viewport_height / 2).max(1);
         self.scroll_offset = self.scroll_offset.saturating_sub(step);
         ChatAction::None
@@ -954,7 +1029,12 @@ impl ChatUi {
     self.complete_selected_slash_command()
   }
 
-  fn draw_slash_palette(&mut self, frame: &mut Frame, messages_area: Rect, t: &Theme) {
+  fn draw_slash_palette(
+    &mut self,
+    frame: &mut Frame,
+    messages_area: Rect,
+    t: &Theme,
+  ) {
     if self.input_mode != ChatInputMode::Insert || self.is_loading {
       return;
     }
@@ -997,7 +1077,9 @@ impl ChatUi {
 
     let mut lines: Vec<Line> = vec![sep_line];
 
-    for (i, spec) in suggestions.iter().skip(start).take(end - start).enumerate() {
+    for (i, spec) in
+      suggestions.iter().skip(start).take(end - start).enumerate()
+    {
       let selected = start + i == self.slash_selected;
 
       let (arrow, name_style, desc_style) = if selected {
@@ -1007,11 +1089,7 @@ impl ChatUi {
           Style::default().fg(t.text),
         )
       } else {
-        (
-          "  ",
-          Style::default().fg(t.text),
-          Style::default().fg(t.text_dim),
-        )
+        ("  ", Style::default().fg(t.text), Style::default().fg(t.text_dim))
       };
 
       let name = spec.command.trim_start_matches('/');
@@ -1036,7 +1114,8 @@ impl ChatUi {
     }
 
     // Count line — right-aligned
-    let count_str = format!("({}/{})", self.slash_selected + 1, suggestions.len());
+    let count_str =
+      format!("({}/{})", self.slash_selected + 1, suggestions.len());
     let padding = w.saturating_sub(count_str.len());
     lines.push(Line::from(Span::styled(
       format!("{}{}", " ".repeat(padding), count_str),
@@ -1057,10 +1136,7 @@ impl ChatUi {
       if let Some(session) = self.active_session.as_mut() {
         if let Some(last_msg) = session.messages.last_mut() {
           for word in &remaining {
-            if !last_msg.content.is_empty() {
-              last_msg.content.push(' ');
-            }
-            last_msg.content.push_str(word);
+            append_stream_chunk(&mut last_msg.content, word);
           }
         }
         let _ = save_session(session);
@@ -1087,6 +1163,7 @@ impl ChatUi {
         }
         self.sync_index();
       }
+      self.follow_tail = true;
       self.scroll_offset = usize::MAX;
       return ChatAction::SlashCommand(raw_input);
     }
@@ -1129,6 +1206,7 @@ impl ChatUi {
           }
           self.sync_index();
         }
+        self.follow_tail = true;
         self.scroll_offset = usize::MAX;
         return ChatAction::None;
       }
@@ -1141,6 +1219,7 @@ impl ChatUi {
     let (tx, rx) = mpsc::channel::<Result<ProviderResponse, String>>();
     self.pending_response = Some(rx);
     self.is_loading = true;
+    self.follow_tail = true;
     self.scroll_offset = usize::MAX;
 
     std::thread::spawn(move || {
@@ -1159,8 +1238,8 @@ impl ChatUi {
           "thread panicked (non-string payload)".to_string()
         };
         log::error!("chat provider thread panicked — {msg}");
-        let _ = tx_panic
-          .send(Err(format!("chat provider thread panicked: {msg}")));
+        let _ =
+          tx_panic.send(Err(format!("chat provider thread panicked: {msg}")));
       }
     });
 
@@ -1185,7 +1264,8 @@ impl ChatUi {
     // switch — every cached entry's wrap was relative to the old width or
     // the old conversation.
     let session_id = self.active_session.as_ref().map(|s| s.id.clone());
-    if width != self.line_cache_width || session_id != self.line_cache_session_id
+    if width != self.line_cache_width
+      || session_id != self.line_cache_session_id
     {
       self.line_cache.clear();
       self.line_cache_width = width;
@@ -1223,153 +1303,22 @@ impl ChatUi {
       // skips the dominant `textwrap::wrap` cost over the message body.
       if let Some(cached) = self.line_cache.get(&key) {
         lines.extend(cached.iter().cloned());
-        if i + 1 < total_msgs {
+        let next_role = msgs.get(i + 1).map(|(role, _, _)| *role);
+        if message_gap_needed(role, next_role) {
           lines.push(Line::from(""));
         }
         continue;
       }
 
-      // Cache miss: compute the per-message lines into a temporary, store
-      // them in the cache, then extend the output.
-      let mut msg_lines: Vec<Line<'static>> = Vec::new();
-      match role {
+      // Cache miss: compute role-specific presentation into a temporary,
+      // store it in the cache, then extend the output.
+      let msg_lines = match role {
         Role::System => continue,
-
-        Role::User => {
-          let text_style = Style::default().fg(t.text).bg(t.bg_user_msg);
-          let stripe_style = Style::default().fg(t.accent).bg(t.bg_user_msg);
-          let indent_style = Style::default().fg(t.text_dim).bg(t.bg_user_msg);
-          let display_content = if content.is_empty() {
-            " ".to_string()
-          } else {
-            crate::sanitize::sanitize_terminal_text(content)
-          };
-          let inner_width = wrap_width.saturating_sub(2).max(1);
-          let mut msg_first = true;
-          for source_line in display_content.lines() {
-            if source_line.is_empty() {
-              let stripe = if msg_first {
-                Span::styled("▌ ", stripe_style)
-              } else {
-                Span::styled("  ", indent_style)
-              };
-              msg_lines.push(Line::from(vec![
-                stripe,
-                Span::styled(" ".repeat(inner_width), text_style),
-              ]));
-              msg_first = false;
-            } else {
-              for wrapped in textwrap::wrap(source_line, inner_width) {
-                let stripe = if msg_first {
-                  Span::styled("▌ ", stripe_style)
-                } else {
-                  Span::styled("  ", indent_style)
-                };
-                msg_lines.push(Line::from(vec![
-                  stripe,
-                  Span::styled(wrapped.to_string(), text_style),
-                ]));
-                msg_first = false;
-              }
-            }
-          }
-        }
-
+        Role::User => render_user_message(content, wrap_width, t),
         Role::Assistant => {
-          let base_style = Style::default().fg(t.text);
-          // Sanitize the assistant's content before doing anything else
-          // with it: terminal-escape sequences in a streamed response
-          // (whether adversarial or just an artifact of model-generated
-          // text) must never reach the renderer.
-          let safe_content = crate::sanitize::sanitize_terminal_text(content);
-          let display_content = if has_streaming_cursor {
-            format!("{safe_content}█")
-          } else {
-            safe_content
-          };
-
-          let display_content = if display_content.is_empty() {
-            " ".to_string()
-          } else {
-            display_content
-          };
-
-          for source_line in display_content.lines() {
-            if source_line.trim().is_empty() {
-              msg_lines.push(Line::from(""));
-            } else if let Some(rest) = source_line.strip_prefix("## ") {
-              // Blank line before H2 to open up sections visually.
-              if msg_lines.last().map_or(false, |l| {
-                l.spans.iter().any(|s| !s.content.trim().is_empty())
-              }) {
-                msg_lines.push(Line::from(""));
-              }
-              // H2 — accent color + bold, no indent
-              let h_style = Style::default()
-                .fg(t.accent)
-                .add_modifier(Modifier::BOLD);
-              for wrapped in textwrap::wrap(rest, wrap_width) {
-                msg_lines.push(parse_markdown_inline(&wrapped, h_style));
-              }
-            } else if let Some(rest) = source_line.strip_prefix("### ") {
-              // H3 — bold, no indent
-              let h_style = base_style.add_modifier(Modifier::BOLD);
-              for wrapped in textwrap::wrap(rest, wrap_width) {
-                msg_lines.push(parse_markdown_inline(&wrapped, h_style));
-              }
-            } else if let Some(rest) = source_line
-              .strip_prefix("- ")
-              .or_else(|| source_line.strip_prefix("* "))
-            {
-              // Bullet — indented with • marker
-              let bullet_width = wrap_width.saturating_sub(4).max(1);
-              let marker_style = Style::default().fg(t.text_dim);
-              let mut first = true;
-              for wrapped in textwrap::wrap(rest, bullet_width) {
-                if first {
-                  let mut spans = vec![
-                    Span::styled("  • ".to_string(), marker_style),
-                  ];
-                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
-                  msg_lines.push(Line::from(spans));
-                  first = false;
-                } else {
-                  let mut spans =
-                    vec![Span::styled("    ".to_string(), base_style)];
-                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
-                  msg_lines.push(Line::from(spans));
-                }
-              }
-            } else if let Some((num, rest)) = parse_numbered_item(source_line) {
-              // Numbered list item
-              let indent_width = wrap_width.saturating_sub(4).max(1);
-              let num_style = Style::default().fg(t.text_dim);
-              let prefix = format!("{num}. ");
-              let pad = "    ";
-              let mut first = true;
-              for wrapped in textwrap::wrap(rest, indent_width) {
-                if first {
-                  let mut spans =
-                    vec![Span::styled(format!("  {prefix}"), num_style)];
-                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
-                  msg_lines.push(Line::from(spans));
-                  first = false;
-                } else {
-                  let mut spans =
-                    vec![Span::styled(pad.to_string(), base_style)];
-                  spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
-                  msg_lines.push(Line::from(spans));
-                }
-              }
-            } else {
-              // Plain prose — wrap at full width
-              for wrapped in textwrap::wrap(source_line, wrap_width) {
-                msg_lines.push(parse_markdown_inline(&wrapped, base_style));
-              }
-            }
-          }
+          render_assistant_message(content, wrap_width, has_streaming_cursor, t)
         }
-      }
+      };
 
       // Cache the freshly-built per-message lines, then extend the output.
       // Cloning into the cache is cheap relative to the textwrap::wrap
@@ -1378,7 +1327,8 @@ impl ChatUi {
       lines.extend(msg_lines);
 
       // Single blank line between messages, not after the last.
-      if i + 1 < total_msgs {
+      let next_role = msgs.get(i + 1).map(|(role, _, _)| *role);
+      if message_gap_needed(role, next_role) {
         lines.push(Line::from(""));
       }
     }
@@ -1404,6 +1354,399 @@ fn parse_numbered_item(line: &str) -> Option<(u32, &str)> {
   let dot = line.find(". ")?;
   let num: u32 = line[..dot].trim().parse().ok()?;
   Some((num, &line[dot + 2..]))
+}
+
+fn render_user_message(
+  content: &str,
+  wrap_width: usize,
+  t: &Theme,
+) -> Vec<Line<'static>> {
+  let text_style = Style::default().fg(t.text).bg(t.bg_user_msg);
+  let stripe_style = Style::default().fg(t.accent).bg(t.bg_user_msg);
+  let indent_style = Style::default().fg(t.text_dim).bg(t.bg_user_msg);
+  let display_content = if content.is_empty() {
+    " ".to_string()
+  } else {
+    crate::sanitize::sanitize_terminal_text(content)
+  };
+  let inner_width = wrap_width.saturating_sub(2).max(1);
+  let mut lines = Vec::new();
+  let mut first_line = true;
+
+  lines.push(user_block_empty_line(wrap_width, t));
+
+  for source_line in display_content.lines() {
+    let wrapped_lines: Vec<String> = if source_line.is_empty() {
+      vec![" ".repeat(inner_width)]
+    } else {
+      textwrap::wrap(source_line, inner_width)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect()
+    };
+
+    for wrapped in wrapped_lines {
+      let marker = if first_line { "▌ " } else { "  " };
+      let marker_style = if first_line { stripe_style } else { indent_style };
+      let fill = inner_width.saturating_sub(wrapped.chars().count());
+      lines.push(Line::from(vec![
+        Span::styled(marker, marker_style),
+        Span::styled(wrapped, text_style),
+        Span::styled(" ".repeat(fill), text_style),
+      ]));
+      first_line = false;
+    }
+  }
+
+  if lines.len() == 1 {
+    lines.push(Line::from(vec![
+      Span::styled("▌ ", stripe_style),
+      Span::styled(" ".repeat(inner_width), text_style),
+    ]));
+  }
+
+  lines.push(user_block_empty_line(wrap_width, t));
+  lines
+}
+
+fn user_block_empty_line(width: usize, t: &Theme) -> Line<'static> {
+  Line::from(Span::styled(
+    " ".repeat(width),
+    Style::default().fg(t.text_dim).bg(t.bg_user_msg),
+  ))
+}
+
+fn message_gap_needed(_current: Role, _next: Option<Role>) -> bool {
+  false
+}
+
+fn split_stream_chunks(content: &str) -> std::collections::VecDeque<String> {
+  let mut chunks = std::collections::VecDeque::new();
+  let mut current = String::new();
+  let mut current_is_whitespace: Option<bool> = None;
+
+  for ch in content.chars() {
+    let is_whitespace = ch.is_whitespace();
+    if current_is_whitespace.is_some_and(|value| value != is_whitespace) {
+      chunks.push_back(std::mem::take(&mut current));
+    }
+    current_is_whitespace = Some(is_whitespace);
+    current.push(ch);
+  }
+
+  if !current.is_empty() {
+    chunks.push_back(current);
+  }
+
+  chunks
+}
+
+fn append_stream_chunk(target: &mut String, chunk: &str) {
+  if chunk.is_empty() {
+    return;
+  }
+
+  if target.is_empty() || chunk.chars().next().is_some_and(char::is_whitespace)
+  {
+    target.push_str(chunk);
+    return;
+  }
+
+  if target.chars().last().is_some_and(char::is_whitespace) {
+    target.push_str(chunk);
+  } else {
+    target.push(' ');
+    target.push_str(chunk);
+  }
+}
+
+fn render_assistant_message(
+  content: &str,
+  wrap_width: usize,
+  has_streaming_cursor: bool,
+  t: &Theme,
+) -> Vec<Line<'static>> {
+  let base_style = Style::default().fg(t.text);
+  let safe_content = crate::sanitize::sanitize_terminal_text(content);
+  let display_content = if has_streaming_cursor {
+    format!("{safe_content}█")
+  } else {
+    safe_content
+  };
+  let display_content = if display_content.is_empty() {
+    " ".to_string()
+  } else {
+    prepare_assistant_markdown(&display_content)
+  };
+
+  let mut lines = vec![Line::from("")];
+  lines.extend(render_assistant_blocks(
+    &display_content,
+    wrap_width,
+    t,
+    base_style,
+  ));
+  lines.push(Line::from(""));
+  lines
+}
+
+fn render_assistant_blocks(
+  display_content: &str,
+  wrap_width: usize,
+  t: &Theme,
+  base_style: Style,
+) -> Vec<Line<'static>> {
+  let mut lines = Vec::new();
+  let mut in_code_block = false;
+
+  for source_line in display_content.lines() {
+    if source_line.trim_start().starts_with("```") {
+      in_code_block = !in_code_block;
+      if !in_code_block {
+        lines.push(Line::from(""));
+      }
+      continue;
+    }
+
+    if in_code_block {
+      render_code_line(source_line, wrap_width, t, &mut lines);
+      continue;
+    }
+
+    if source_line.trim().is_empty() {
+      lines.push(Line::from(""));
+    } else if let Some(rest) = source_line.strip_prefix("## ") {
+      if has_nonblank_line(&lines) {
+        lines.push(Line::from(""));
+      }
+      let style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+      push_wrapped_inline(rest, wrap_width, style, &mut lines);
+    } else if let Some(rest) = source_line.strip_prefix("### ") {
+      let style = base_style.add_modifier(Modifier::BOLD);
+      push_wrapped_inline(rest, wrap_width, style, &mut lines);
+    } else if let Some(rest) = source_line.strip_prefix("> ") {
+      render_quote(rest, wrap_width, t, base_style, &mut lines);
+    } else if let Some(rest) =
+      source_line.strip_prefix("- ").or_else(|| source_line.strip_prefix("* "))
+    {
+      render_bullet(rest, wrap_width, t, base_style, &mut lines);
+    } else if let Some((num, rest)) = parse_numbered_item(source_line) {
+      render_numbered_item(num, rest, wrap_width, t, base_style, &mut lines);
+    } else {
+      push_wrapped_inline(source_line, wrap_width, base_style, &mut lines);
+    }
+  }
+
+  lines
+}
+
+fn prepare_assistant_markdown(content: &str) -> String {
+  let normalized = normalize_markdown(content);
+  let mut out = String::with_capacity(normalized.len() + 64);
+  let mut in_code_block = false;
+
+  for (idx, line) in normalized.lines().enumerate() {
+    if idx > 0 {
+      out.push('\n');
+    }
+
+    if line.trim_start().starts_with("```") {
+      in_code_block = !in_code_block;
+      out.push_str(line);
+      continue;
+    }
+
+    if in_code_block {
+      out.push_str(line);
+    } else {
+      out.push_str(&break_inline_markdown_markers(line));
+    }
+  }
+
+  out
+}
+
+fn break_inline_markdown_markers(line: &str) -> String {
+  let mut out = String::with_capacity(line.len() + 32);
+  let mut iter = line.char_indices().peekable();
+
+  while let Some((i, ch)) = iter.next() {
+    let rest = &line[i..];
+
+    if ch == ' ' || ch == '\t' {
+      if let Some(marker_len) = inline_marker_len(rest) {
+        if has_visible_text(&out) {
+          out.push('\n');
+          out.push_str(rest[..marker_len].trim_start());
+          for _ in 0..marker_len.saturating_sub(1) {
+            iter.next();
+          }
+          continue;
+        }
+      }
+    }
+
+    out.push(ch);
+  }
+
+  out
+}
+
+fn inline_marker_len(rest: &str) -> Option<usize> {
+  let marker = rest.trim_start();
+  let trimmed = rest.len().saturating_sub(marker.len());
+
+  if let Some(after) = marker.strip_prefix("- ") {
+    if starts_structural_text(after) {
+      return Some(trimmed + 2);
+    }
+  }
+
+  if let Some(len) = numbered_marker_len(marker) {
+    let after = &marker[len..];
+    if starts_structural_text(after) {
+      return Some(trimmed + len);
+    }
+  }
+
+  None
+}
+
+fn numbered_marker_len(text: &str) -> Option<usize> {
+  let bytes = text.as_bytes();
+  let mut idx = 0;
+  while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+    idx += 1;
+  }
+  if idx == 0 || idx > 3 {
+    return None;
+  }
+  if bytes.get(idx) == Some(&b'.') && bytes.get(idx + 1) == Some(&b' ') {
+    Some(idx + 2)
+  } else {
+    None
+  }
+}
+
+fn starts_structural_text(text: &str) -> bool {
+  text
+    .chars()
+    .next()
+    .is_some_and(|c| c.is_alphanumeric() || c == '*' || c == '`')
+}
+
+fn has_visible_text(text: &str) -> bool {
+  text.chars().any(|c| !c.is_whitespace())
+}
+
+fn has_nonblank_line(lines: &[Line<'static>]) -> bool {
+  lines.last().is_some_and(|line| {
+    line.spans.iter().any(|span| !span.content.trim().is_empty())
+  })
+}
+
+fn push_wrapped_inline(
+  text: &str,
+  width: usize,
+  style: Style,
+  lines: &mut Vec<Line<'static>>,
+) {
+  for wrapped in textwrap::wrap(text, width.max(1)) {
+    lines.push(parse_markdown_inline(&wrapped, style));
+  }
+}
+
+fn render_bullet(
+  text: &str,
+  wrap_width: usize,
+  t: &Theme,
+  base_style: Style,
+  lines: &mut Vec<Line<'static>>,
+) {
+  let bullet_width = wrap_width.saturating_sub(4).max(1);
+  let marker_style = Style::default().fg(t.text_dim);
+  let mut first = true;
+  for wrapped in textwrap::wrap(text, bullet_width) {
+    let mut spans = if first {
+      first = false;
+      vec![Span::styled("  • ".to_string(), marker_style)]
+    } else {
+      vec![Span::styled("    ".to_string(), base_style)]
+    };
+    spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+    lines.push(Line::from(spans));
+  }
+}
+
+fn render_numbered_item(
+  num: u32,
+  text: &str,
+  wrap_width: usize,
+  t: &Theme,
+  base_style: Style,
+  lines: &mut Vec<Line<'static>>,
+) {
+  let prefix = format!("{num}. ");
+  let first_prefix = format!("  {prefix}");
+  let follow_prefix = " ".repeat(first_prefix.chars().count());
+  let item_width =
+    wrap_width.saturating_sub(first_prefix.chars().count()).max(1);
+  let num_style = Style::default().fg(t.text_dim);
+  let mut first = true;
+
+  for wrapped in textwrap::wrap(text, item_width) {
+    let mut spans = if first {
+      first = false;
+      vec![Span::styled(first_prefix.clone(), num_style)]
+    } else {
+      vec![Span::styled(follow_prefix.clone(), base_style)]
+    };
+    spans.extend(parse_markdown_inline(&wrapped, base_style).spans);
+    lines.push(Line::from(spans));
+  }
+}
+
+fn render_quote(
+  text: &str,
+  wrap_width: usize,
+  t: &Theme,
+  base_style: Style,
+  lines: &mut Vec<Line<'static>>,
+) {
+  let quote_width = wrap_width.saturating_sub(3).max(1);
+  let marker_style = Style::default().fg(t.accent);
+  let quote_style = base_style.fg(t.text_dim);
+  for wrapped in textwrap::wrap(text, quote_width) {
+    let mut spans = vec![Span::styled("│ ".to_string(), marker_style)];
+    spans.extend(parse_markdown_inline(&wrapped, quote_style).spans);
+    lines.push(Line::from(spans));
+  }
+}
+
+fn render_code_line(
+  text: &str,
+  wrap_width: usize,
+  t: &Theme,
+  lines: &mut Vec<Line<'static>>,
+) {
+  let code_width = wrap_width.saturating_sub(2).max(1);
+  let style = Style::default().fg(t.mono).bg(t.bg_code);
+  let chunks: Vec<String> = if text.is_empty() {
+    vec![String::new()]
+  } else {
+    textwrap::wrap(text, code_width)
+      .into_iter()
+      .map(|line| line.to_string())
+      .collect()
+  };
+  for chunk in chunks {
+    let fill = code_width.saturating_sub(chunk.chars().count());
+    lines.push(Line::from(vec![
+      Span::styled(" ", style),
+      Span::styled(chunk, style),
+      Span::styled(" ".repeat(fill + 1), style),
+    ]));
+  }
 }
 
 /// Parse inline markdown (`**bold**`, `*italic*`) into styled spans.
@@ -1459,6 +1802,27 @@ fn parse_markdown_inline(text: &str, base_style: Style) -> Line<'static> {
         current.push(chars[i]);
         i += 1;
       }
+    } else if chars[i] == '`' {
+      let start = i + 1;
+      let mut j = start;
+      while j < chars.len() && chars[j] != '`' {
+        j += 1;
+      }
+      if j < chars.len() {
+        if !current.is_empty() {
+          spans.push(Span::styled(current.clone(), current_style));
+          current.clear();
+        }
+        let inner: String = chars[start..j].iter().collect();
+        spans.push(Span::styled(
+          inner,
+          base_style.add_modifier(Modifier::REVERSED),
+        ));
+        i = j + 1;
+      } else {
+        current.push(chars[i]);
+        i += 1;
+      }
     } else {
       current.push(chars[i]);
       i += 1;
@@ -1485,7 +1849,223 @@ fn sanitize_content(content: &str) -> String {
     || lower.contains("invalid_api_key")
     || lower.contains("rate_limit")
     || (content.trim_start().starts_with('{') && lower.contains("\"error\""));
-  if looks_like_error { parse_api_error(content) } else { content.to_string() }
+  if looks_like_error {
+    parse_api_error(content)
+  } else {
+    content.to_string()
+  }
+}
+
+/// Inject newlines before structural markdown markers that the model often
+/// emits inline (because most chat completions return markdown as one or two
+/// long paragraphs with embedded headings and lists). Without this pass, the
+/// chat renderer's line-prefix parser can't recognise `### 6. Foo` or
+/// `2. **Bar**:` as headings/list items because they don't sit at the start
+/// of a line — and the user sees a wall of running prose.
+///
+/// The transform is conservative: only inject a newline when the marker is
+/// preceded by a space (so we don't break content that already has the
+/// marker on its own line, and don't accidentally split mid-word).
+fn normalize_markdown(content: &str) -> String {
+  let mut out = String::with_capacity(content.len() + 64);
+  // Iterate by char_indices so we never split a multi-byte codepoint.
+  let mut iter = content.char_indices().peekable();
+  while let Some((i, ch)) = iter.next() {
+    let rest = &content[i..];
+    let prev_is_space =
+      out.chars().last().map_or(false, |c| c == ' ' || c == '\t');
+
+    if prev_is_space {
+      // ### N. Title → newline before the ###
+      if rest.starts_with("### ") && starts_numbered_heading(&rest[4..]) {
+        if out.ends_with(' ') {
+          out.pop();
+        }
+        out.push_str("\n\n### ");
+        // Advance the iterator by 4 chars (all ASCII).
+        for _ in 0..3 {
+          iter.next();
+        }
+        continue;
+      }
+      // ## Heading → newline before the ##
+      if let Some(after) = rest.strip_prefix("## ") {
+        if after
+          .chars()
+          .next()
+          .map_or(false, |c| c.is_alphanumeric() || c == '*')
+        {
+          if out.ends_with(' ') {
+            out.pop();
+          }
+          out.push_str("\n\n## ");
+          for _ in 0..2 {
+            iter.next();
+          }
+          continue;
+        }
+      }
+      // N. **Bold**: → newline before the digit
+      if let Some(consumed) = match_numbered_bold(rest) {
+        if out.ends_with(' ') {
+          out.pop();
+        }
+        out.push('\n');
+        out.push_str(&rest[..consumed]);
+        // Advance iterator past the consumed chars (all ASCII).
+        for _ in 0..(consumed - 1) {
+          iter.next();
+        }
+        continue;
+      }
+    }
+
+    out.push(ch);
+  }
+  out
+}
+
+/// Returns true if `s` starts with `<digits>. ` (e.g. `6. `).
+fn starts_numbered_heading(s: &str) -> bool {
+  let bytes = s.as_bytes();
+  let mut j = 0;
+  while j < bytes.len() && bytes[j].is_ascii_digit() {
+    j += 1;
+  }
+  j > 0 && j + 1 < bytes.len() && bytes[j] == b'.' && bytes[j + 1] == b' '
+}
+
+/// Match `<digits>. **` and return the number of bytes consumed (including
+/// the `**`), or None if the pattern doesn't match.
+fn match_numbered_bold(s: &str) -> Option<usize> {
+  let bytes = s.as_bytes();
+  let mut j = 0;
+  while j < bytes.len() && bytes[j].is_ascii_digit() {
+    j += 1;
+  }
+  if j == 0 {
+    return None;
+  }
+  if bytes.get(j) != Some(&b'.') {
+    return None;
+  }
+  if bytes.get(j + 1) != Some(&b' ') {
+    return None;
+  }
+  if bytes.get(j + 2) != Some(&b'*') || bytes.get(j + 3) != Some(&b'*') {
+    return None;
+  }
+  Some(j + 4)
+}
+
+#[cfg(test)]
+mod normalize_markdown_tests {
+  use super::{
+    append_stream_chunk, normalize_markdown, prepare_assistant_markdown,
+    render_assistant_message, render_user_message, split_stream_chunks,
+  };
+  use ui_theme::Theme;
+
+  #[test]
+  fn injects_newline_before_inline_h3_with_number() {
+    let got = normalize_markdown("foo bar ### 6. Heading more text");
+    assert!(got.contains("\n\n### 6. Heading"), "got: {got:?}");
+  }
+
+  #[test]
+  fn injects_newline_before_inline_h2() {
+    let got = normalize_markdown("intro ## Section follows");
+    assert!(got.contains("\n\n## Section"), "got: {got:?}");
+  }
+
+  #[test]
+  fn injects_newline_before_numbered_bold_item() {
+    let got =
+      normalize_markdown("intro 1. **First**: thing 2. **Second**: thing");
+    assert!(got.contains("\n1. **First**"), "got: {got:?}");
+    assert!(got.contains("\n2. **Second**"), "got: {got:?}");
+  }
+
+  #[test]
+  fn leaves_already_well_formatted_markdown_alone() {
+    let src = "## Heading\n\n- bullet\n- bullet\n\n1. **First**: foo\n2. **Second**: bar";
+    let got = normalize_markdown(src);
+    // No double-newlines added beyond what's already there.
+    assert!(!got.contains("\n\n\n"), "got: {got:?}");
+  }
+
+  #[test]
+  fn does_not_split_mid_word() {
+    // No leading space before the digits, so don't inject.
+    let got = normalize_markdown("abc1. not a list");
+    assert_eq!(got, "abc1. not a list");
+  }
+
+  #[test]
+  fn breaks_inline_bullets_into_renderable_blocks() {
+    let got = prepare_assistant_markdown(
+      "focus on these topics: - Scalars - Vectors - Matrix operations",
+    );
+    assert!(
+      got.contains("topics:\n- Scalars\n- Vectors\n- Matrix operations"),
+      "got: {got:?}"
+    );
+  }
+
+  #[test]
+  fn breaks_inline_numbered_items_into_renderable_blocks() {
+    let got =
+      prepare_assistant_markdown("start 1. First point 2. Second point");
+    assert!(
+      got.contains("start\n1. First point\n2. Second point"),
+      "got: {got:?}"
+    );
+  }
+
+  #[test]
+  fn leaves_code_block_markers_inside_code_alone() {
+    let got = prepare_assistant_markdown("```\na - b 1. not list\n```");
+    assert_eq!(got, "```\na - b 1. not list\n```");
+  }
+
+  #[test]
+  fn stream_chunks_preserve_newlines() {
+    let chunks = split_stream_chunks("one\n\n- two");
+    let mut out = String::new();
+    for chunk in chunks {
+      append_stream_chunk(&mut out, &chunk);
+    }
+    assert_eq!(out, "one\n\n- two");
+  }
+
+  #[test]
+  fn user_block_owns_vertical_spacing_and_full_width() {
+    let theme = Theme::dark();
+    let lines = render_user_message("hello world", 20, &theme);
+    assert_eq!(rendered_width(&lines[0]), 20);
+    assert_eq!(rendered_width(lines.last().unwrap()), 20);
+    assert_eq!(rendered_width(&lines[1]), 20);
+    assert!(lines[0].spans.iter().all(|span| span.style.bg.is_some()));
+    assert!(lines
+      .last()
+      .unwrap()
+      .spans
+      .iter()
+      .all(|span| span.style.bg.is_some()));
+  }
+
+  #[test]
+  fn assistant_message_owns_unhighlighted_vertical_spacing() {
+    let theme = Theme::dark();
+    let lines = render_assistant_message("hello world", 20, false, &theme);
+    assert_eq!(lines.first().unwrap().spans.len(), 0);
+    assert_eq!(lines.last().unwrap().spans.len(), 0);
+    assert!(lines[1].spans.iter().all(|span| span.style.bg.is_none()));
+  }
+
+  fn rendered_width(line: &ratatui::text::Line<'static>) -> usize {
+    line.spans.iter().map(|span| span.content.chars().count()).sum()
+  }
 }
 
 /// Map a raw API error string to a friendly one-line message.
@@ -1579,4 +2159,20 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
   let x = area.x + area.width.saturating_sub(width) / 2;
   let y = area.y + area.height.saturating_sub(height) / 2;
   Rect { x, y, width: width.min(area.width), height: height.min(area.height) }
+}
+
+fn truncate_for_width(s: &str, max_chars: usize) -> String {
+  if max_chars == 0 {
+    return String::new();
+  }
+  let mut out = String::new();
+  let mut chars = s.chars();
+  for _ in 0..max_chars {
+    let Some(c) = chars.next() else { return out };
+    out.push(c);
+  }
+  if chars.next().is_some() {
+    out.push('…');
+  }
+  out
 }
