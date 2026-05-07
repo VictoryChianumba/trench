@@ -23,12 +23,11 @@ arboard = "3"
 chrono = { version = "0.4", features = ["serde"] }
 notes = { path = "../crates/notes" }
 chat = { path = "../crates/chat" }
-cli-text-reader = { path = "../cli-text-reader" }
-# Tread is the v1 arXiv reader being swapped in for cli-text-reader.
-# Path dep so updates in the tread repo flow into trench's next build
-# automatically — no version bumps needed.  Both deps coexist during
-# the swap window (S4–S8); cli-text-reader gets removed in S9 after
-# the smoke window.
+# Tread — v1 arXiv reader, embedded as a library.  Path dep so
+# updates in the tread repo flow into trench's next build
+# automatically.  Replaced cli-text-reader during the migration
+# (S4–S9); cli-text-reader and its 6 sibling crates were removed
+# in S9 once tread proved out in normal use.
 tread = { path = "../../tread/crates/tread" }
 ui-theme = { path = "../crates/ui-theme" }
 syntect = "5"

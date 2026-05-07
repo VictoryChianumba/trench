@@ -1074,9 +1074,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   // Install a panic hook that restores the terminal before printing the
-  // backtrace. Shared with standalone hygg-reader via cli-text-reader so both
-  // binaries get identical recovery behaviour.
-  cli_text_reader::install_terminal_panic_hook();
+  // backtrace.  Without this, a panic mid-run leaves the user stuck in
+  // alt-screen / raw mode with no visible cursor.  Best-effort — every
+  // step ignores its own errors so a partial failure (e.g. stderr
+  // already closed) doesn't prevent the rest from running and doesn't
+  // double-panic.
+  {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+      let _ = crossterm::terminal::disable_raw_mode();
+      let _ = crossterm::execute!(
+        std::io::stderr(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        crossterm::cursor::Show,
+      );
+      // Blank line before the panic message so it doesn't collide
+      // with any partial frame the alt-screen leave just flushed.
+      eprintln!();
+      default_hook(info);
+    }));
+  }
 
   enable_raw_mode()?;
   let mut stdout = io::stdout();
